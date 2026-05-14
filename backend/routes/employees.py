@@ -10,9 +10,31 @@ DELETE_ROLES = {'admin', 'hr_head'}
 
 def serialize(emp):
     emp['_id'] = str(emp['_id'])
+ 
+    # Flatten step1_data fields to root level so the HR edit form is pre-filled
+    # with whatever the employee entered in their onboarding Step-1 form.
+    step1 = emp.get('step1_data') or {}
+ 
+    if not emp.get('father_name'):
+        # employee Step-1 form uses 'guardian_name' for Father's/Husband's name
+        emp['father_name'] = step1.get('guardian_name') or step1.get('father_name') or ''
+ 
+    if not emp.get('work_location'):
+        emp['work_location'] = step1.get('work_location') or step1.get('place') or ''
+ 
+    if not emp.get('address'):
+        emp['address'] = (step1.get('address')
+                          or step1.get('postal_address')
+                          or step1.get('permanent_address') or '')
+ 
+    if not emp.get('date_of_birth'):
+        emp['date_of_birth'] = step1.get('dob') or step1.get('date_of_birth') or ''
+ 
+    if not emp.get('phone'):
+        emp['phone'] = step1.get('phone') or ''
+ 
     return emp
-
-
+ 
 def _next_emp_id(db):
     counter = db.counters.find_one_and_update(
         {'_id': 'employee'},
@@ -91,9 +113,15 @@ def save_step1():
         {'_id': ObjectId(emp_ref)},
         {'$set': {
             'step1_data':    data,
+            # ── fields synced to root so HR edit form is always pre-filled ──
             'phone':         data.get('phone', ''),
-            'date_of_birth': data.get('dob', ''),
-            'address':       data.get('address', ''),
+            'date_of_birth': data.get('dob', '') or data.get('date_of_birth', ''),
+            'address':       (data.get('address', '')
+                              or data.get('postal_address', '')
+                              or data.get('permanent_address', '')),
+            # guardian_name is the key used in the employee Step-1 form
+            'father_name':   data.get('guardian_name', '') or data.get('father_name', ''),
+            'work_location': data.get('work_location', '') or data.get('place', ''),
             'pan_number':    data.get('pan_number', ''),
             'bank_account':  data.get('account_number', ''),
             'bank_ifsc':     data.get('ifsc_code', ''),
@@ -132,6 +160,25 @@ def get_employee(emp_id):
     emp = db.employees.find_one({'_id': ObjectId(emp_id)})
     if not emp:
         return jsonify({'error': 'Not found'}), 404
+
+    # Pull missing fields from latest offer letter context
+    letter = db.letters.find_one(
+        {'employee_id': emp_id, 'letter_type': 'offer'},
+        sort=[('version', -1)]
+    )
+    if letter:
+        ctx = letter.get('context') or {}
+        if not emp.get('email'):        emp['email']       = ctx.get('email', '')
+        if not emp.get('ctc'):          emp['ctc']         = ctx.get('ctc', '')
+        if not emp.get('joining_date'): emp['joining_date'] = ctx.get('joining_date', '')
+        if not emp.get('department'):   emp['department']   = ctx.get('department', '')
+
+    # Final fallback: pull login email from linked user account
+    if not emp.get('email'):
+        linked_user = db.users.find_one({'employee_ref': emp_id})
+        if linked_user:
+            emp['email'] = linked_user.get('email', '')
+
     return jsonify(serialize(emp))
 
 

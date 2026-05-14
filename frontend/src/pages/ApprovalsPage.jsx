@@ -1,7 +1,7 @@
-
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import { HRHeadPanel } from './LettersPage';
 
 const STATUS_CFG = {
   pending_manager: { label: 'Pending Manager', cls: 'badge-amber' },
@@ -127,99 +127,6 @@ function LetterPreviewModal({ letter, onClose }) {
         </div>
         <div style={{ flexShrink: 0, marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Offer Letter Review Modal ─────────────────────────────────────────────────
-
-function ReviewModal({ letter, onClose, onDone }) {
-  const [remarks, setRemarks] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [pdfUrl, setPdfUrl] = useState(null);
-  const [pdfLoading, setPdfLoading] = useState(true);
-
-  useEffect(() => {
-    setPdfLoading(true);
-    axios.get(`/api/letters/${letter._id}/preview-pdf`, { responseType: 'blob' })
-      .then(r => setPdfUrl(URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }))))
-      .catch(() => { })
-      .finally(() => setPdfLoading(false));
-  }, [letter._id]);
-
-  const act = async (action) => {
-    if (action === 'reject' && !remarks.trim()) { setError('Rejection reason is required'); return; }
-    setLoading(true); setError('');
-    try {
-      await axios.post(`/api/approvals/${letter._id}/action`, { action, remarks });
-      onDone(action);
-    } catch (e) {
-      setError(e.response?.data?.error || 'Action failed');
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 860, width: '97%', maxHeight: '94vh', display: 'flex', flexDirection: 'column', padding: 0 }}
-        onClick={e => e.stopPropagation()}>
-        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 4 }}>Review Offer Letter</div>
-              <h2 style={{ margin: 0, fontSize: 18 }}>{letter.employee_name}</h2>
-              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
-                {letter.employee_code} · v{letter.version || 1} ·{' '}
-                <span className={STATUS_CFG[letter.status]?.cls ? `badge ${STATUS_CFG[letter.status].cls}` : ''}>{STATUS_CFG[letter.status]?.label || letter.status}</span>
-              </div>
-            </div>
-            <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
-          </div>
-        </div>
-        <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <div style={{ flex: 1, borderRight: '1px solid var(--border)', overflow: 'hidden', minWidth: 0 }}>
-            {pdfLoading ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', fontSize: 13 }}>
-                <div className="spinner" style={{ marginRight: 10 }} /> Loading preview…
-              </div>
-            ) : pdfUrl ? (
-              <iframe src={pdfUrl} style={{ width: '100%', height: '100%', minHeight: 500, border: 'none' }} title="Letter Preview" />
-            ) : (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)', fontSize: 13 }}>Preview not available</div>
-            )}
-          </div>
-          <div style={{ width: 300, flexShrink: 0, padding: '20px 20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {letter.approval_history?.length > 0 && (
-              <div>
-                <div style={{ fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Approval Trail</div>
-                {letter.approval_history.map((h, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 8, padding: '5px 0', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
-                    <span style={{ fontFamily: 'var(--mono)', color: h.action === 'approve' ? 'var(--green)' : h.action === 'reject' ? 'var(--red)' : 'var(--accent)', minWidth: 60 }}>{h.action}</span>
-                    <span style={{ color: 'var(--text-muted)' }}>{h.user_name || h.role}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="form-group" style={{ margin: 0 }}>
-              <label className="form-label">Remarks <span style={{ color: 'var(--red)', fontSize: 10 }}>(required to reject)</span></label>
-              <textarea value={remarks} onChange={e => setRemarks(e.target.value)} rows={4}
-                placeholder="Add notes… Required if rejecting." style={{ resize: 'vertical' }} />
-            </div>
-            {error && <div className="alert alert-error" style={{ fontSize: 12 }}>{error}</div>}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 'auto' }}>
-              <button className="btn btn-primary" onClick={() => act('approve')} disabled={loading}
-                style={{ background: 'var(--green)', borderColor: 'var(--green)' }}>
-                {loading ? 'Processing…' : '✓ Approve'}
-              </button>
-              <button className="btn btn-danger" onClick={() => act('reject')} disabled={loading}>
-                {loading ? 'Processing…' : '✕ Reject'}
-              </button>
-              <button className="btn btn-secondary" onClick={onClose} disabled={loading}>Cancel</button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -978,10 +885,9 @@ export default function ApprovalsPage() {
       {/* Modals */}
       {reviewingDoc && <HRReviewModal submission={reviewingDoc} onClose={() => setReviewingDoc(null)} onDone={notify} />}
       {previewingLetter && <LetterPreviewModal letter={previewingLetter} onClose={() => setPreviewingLetter(null)} />}
-      {reviewingLetter && <ReviewModal letter={reviewingLetter} onClose={() => setReviewingLetter(null)} onDone={(action) => { setReviewingLetter(null); notify(`Letter ${action}d successfully.`); }} />}
+      {reviewingLetter && <HRHeadPanel letter={reviewingLetter} onClose={() => setReviewingLetter(null)} onDone={(action) => { setReviewingLetter(null); notify(`Letter ${action}d successfully.`); }} />}
       {reviewingAO && <AOReviewModal ao={reviewingAO} onClose={() => setReviewingAO(null)} onDone={(action) => { setReviewingAO(null); notify(`Appointment order ${action}d successfully.`); }} />}
       {reviewingResign && <ResignationModal emp={reviewingResign} onClose={() => setReviewingResign(null)} onDone={(action) => { setReviewingResign(null); notify(`Resignation ${action}d successfully.`); }} />}
     </div>
   );
 }
-

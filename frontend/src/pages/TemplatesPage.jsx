@@ -3,21 +3,21 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 
 const ALL_PLACEHOLDERS = [
-  ['employee_name','Full name'],['employee_id','Employee ID'],['designation','Job title'],
-  ['department','Department'],['ctc','Annual CTC'],['basic','Basic salary'],
-  ['hra','HRA'],['allowances','Other allowances'],['joining_date','Start date'],
-  ['address','Home address'],['probation_period','Probation (months)'],
-  ['notice_period','Notice (days)'],['company_name','Company'],
-  ['hr_signatory_name','Signatory name'],['hr_signatory_designation','Signatory title'],
-  ['date','Letter date'],
-  ['resignation_date','Resignation date'],['last_working_day','Last working day'],['exit_reason','Exit reason'],
+  ['employee_name', 'Full name'], ['employee_id', 'Employee ID'], ['designation', 'Job title'],
+  ['department', 'Department'], ['ctc', 'Annual CTC'], ['basic', 'Basic salary'],
+  ['hra', 'HRA'], ['allowances', 'Other allowances'], ['joining_date', 'Start date'],
+  ['address', 'Home address'], ['probation_period', 'Probation (months)'],
+  ['notice_period', 'Notice (days)'], ['company_name', 'Company'],
+  ['hr_signatory_name', 'Signatory name'], ['hr_signatory_designation', 'Signatory title'],
+  ['date', 'Letter date'],
+  ['resignation_date', 'Resignation date'], ['last_working_day', 'Last working day'], ['exit_reason', 'Exit reason'],
 ];
 
 // ── Delete Confirm Modal ────────────────────────────────────────────────────
 
 function DeleteTemplateModal({ template, onClose, onDone }) {
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState('');
+  const [error, setError] = useState('');
 
   const confirm = async () => {
     setLoading(true); setError('');
@@ -70,19 +70,19 @@ function DeleteTemplateModal({ template, onClose, onDone }) {
 // ── Main TemplatesPage ───────────────────────────────────────────────────────
 
 export default function TemplatesPage() {
-  const { user }                                    = useAuth();
-  const [templates,    setTemplates]                = useState([]);
-  const [loading,      setLoading]                  = useState(true);
-  const [showModal,    setShowModal]                = useState(false);
-  const [deleteTarget, setDeleteTarget]             = useState(null);
-  const [uploading,    setUploading]                = useState(false);
-  const [error,        setError]                    = useState('');
-  const [success,      setSuccess]                  = useState('');
-  const [form,         setForm]                     = useState({ name: '', templateType: 'offer' });
-  const [activeType,   setActiveType]               = useState('offer');
+  const { user } = useAuth();
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [form, setForm] = useState({ name: '', templateType: 'offer' });
+  const [activeType, setActiveType] = useState('offer');
   const fileRef = useRef();
 
-  const isAdmin   = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin';
   const canDelete = user?.role === 'admin' || user?.role === 'hr_head';
 
   const load = (type = activeType) => {
@@ -142,7 +142,7 @@ export default function TemplatesPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Templates</h1>
-          <p className="page-subtitle">Manage DOCX templates with &#123;&#123;placeholders&#125;&#125;</p>
+
         </div>
         {isAdmin && (
           <button className="btn btn-primary"
@@ -153,7 +153,7 @@ export default function TemplatesPage() {
       </div>
 
       {success && <div className="alert alert-success">{success}</div>}
-      {error   && <div className="alert alert-error">{error}</div>}
+      {error && <div className="alert alert-error">{error}</div>}
 
       {/* Permission notice */}
       {canDelete && (
@@ -174,29 +174,14 @@ export default function TemplatesPage() {
         ))}
       </div>
 
-      {/* Placeholder reference */}
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '16px 20px', marginBottom: 20 }}>
-        <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>
-          Supported Placeholders — use these in your Word document
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 6 }}>
-          {ALL_PLACEHOLDERS.map(([key, label]) => (
-            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <code style={{ fontSize: 11, background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '2px 7px', borderRadius: 4, color: 'var(--accent)', fontFamily: 'var(--mono)', whiteSpace: 'nowrap' }}>
-                {'{{'}{key}{'}}'}
-              </code>
-              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{label}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+
 
       <div className="card">
         {loading ? <div className="page-loading"><div className="spinner" /></div> : (
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Name</th><th>Version</th><th>Placeholders Found</th><th>Status</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Version</th><th>Status</th><th>Actions</th></tr>
               </thead>
               <tbody>
                 {templates.length === 0 ? (
@@ -211,16 +196,7 @@ export default function TemplatesPage() {
                       <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)', marginTop: 2 }}>{t.type}</div>
                     </td>
                     <td><span className="badge badge-gray mono">v{t.version}</span></td>
-                    <td>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {(t.placeholders || []).map(p => (
-                          <span key={p} style={{ fontSize: 10, background: 'var(--accent-dim)', color: 'var(--accent)', padding: '2px 7px', borderRadius: 4, fontFamily: 'var(--mono)', border: '1px solid rgba(79,142,247,0.2)' }}>
-                            {'{{'}{p}{'}}'}
-                          </span>
-                        ))}
-                        {!t.placeholders?.length && <span className="text-muted text-sm">none detected</span>}
-                      </div>
-                    </td>
+
                     <td><span className={`badge ${t.is_active ? 'badge-green' : 'badge-gray'}`}>{t.is_active ? 'Active' : 'Inactive'}</span></td>
                     <td>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -265,10 +241,10 @@ export default function TemplatesPage() {
               <div className="form-group">
                 <label className="form-label">Template Type *</label>
                 <select value={form.templateType} onChange={e => setForm({ ...form, templateType: e.target.value })}>
-                <option value="offer">Offer Letter</option>
-                <option value="relieving">Relieving Letter</option>
-                <option value="appointment_order">Appointment Order</option>   {/* ← add this */}
-              </select>
+                  <option value="offer">Offer Letter</option>
+                  <option value="relieving">Relieving Letter</option>
+                  <option value="appointment_order">Appointment Order</option>   {/* ← add this */}
+                </select>
               </div>
               <div className="form-group">
                 <label className="form-label">Template Name</label>

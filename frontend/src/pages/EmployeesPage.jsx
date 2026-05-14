@@ -304,7 +304,14 @@ function EmployeeProfile({ emp, onClose, onRefresh, onEdit }) {
 
             <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', alignItems: 'flex-start' }}>
               {canAdmin && (
-                <button className="btn btn-secondary btn-sm" style={{ fontSize: 12 }} onClick={() => onEdit(emp)}>✎ Edit</button>
+                <button className="btn btn-secondary btn-sm" style={{ fontSize: 12 }} onClick={async () => {
+                  try {
+                    const { data } = await axios.get(`/api/employees/${emp._id}`);
+                    onEdit(data);
+                  } catch {
+                    onEdit(emp);
+                  }
+                }}>✎ Edit</button>
               )}
 
               {canAdmin && (
@@ -734,8 +741,41 @@ function EmployeeProfile({ emp, onClose, onRefresh, onEdit }) {
 }
 
 // ─── Edit Employee Modal ──────────────────────────────────────────────────────
+
+/** Normalise any date value to YYYY-MM-DD so <input type="date"> shows it.
+ *  Handles: "2026-05-06", "2026-05-06T00:00:00.000Z", "06-05-2026", "06/05/2026" */
+function toInputDate(val) {
+  if (!val) return '';
+  const s = String(val).trim();
+  // Already ISO date string YYYY-MM-DD (with optional time)
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // DD-MM-YYYY or DD/MM/YYYY
+  const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  // Fallback: let Date parse it
+  try {
+    const d = new Date(s);
+    if (!isNaN(d)) return d.toISOString().slice(0, 10);
+  } catch { /* */ }
+  return '';
+}
+
 function EditModal({ emp, onClose, onDone }) {
-  const [form, setForm] = useState({ ...emp });
+  const step1 = emp.step1_data || {};
+  // letter_context is populated by the Edit button's fresh GET /api/employees/:id
+  // which now returns the latest letter context via serialize()
+  const ctx = emp.letter_context || {};
+  const merged = {
+    ...emp,
+    email: emp.email || ctx.email || step1.email || step1.personal_email || emp.login_email || emp.work_email || '',
+    department: emp.department || ctx.department || '',
+    ctc: emp.ctc || ctx.ctc || '',
+    joining_date: toInputDate(emp.joining_date || ctx.joining_date || step1.date_of_joining || ''),
+    phone: emp.phone || step1.phone || '',
+    date_of_birth: toInputDate(emp.date_of_birth || step1.dob || step1.date_of_birth || ''),
+    address: emp.address || step1.address || step1.postal_address || step1.permanent_address || '',
+  };
+  const [form, setForm] = useState(merged);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [managers, setManagers] = useState([]);
@@ -804,16 +844,6 @@ function EditModal({ emp, onClose, onDone }) {
             <div className="form-group">
               <label className="form-label">Date of Birth</label>
               <input type="date" value={form.date_of_birth || ''} onChange={e => setForm({ ...form, date_of_birth: e.target.value })} />
-            </div>
-          </div>
-          <div className="form-row">
-            <div className="form-group">
-              <label className="form-label">Father's Name</label>
-              <input value={form.father_name || ''} onChange={e => setForm({ ...form, father_name: e.target.value })} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Work Location</label>
-              <input value={form.work_location || ''} onChange={e => setForm({ ...form, work_location: e.target.value })} />
             </div>
           </div>
           <div className="form-group">

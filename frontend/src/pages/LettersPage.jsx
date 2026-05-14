@@ -1540,7 +1540,7 @@ function RevisedModal({ employees, templates, onClose, onDone }) {
 // HR Head Panel — approve/reject/edit/email/confirm/create-id
 // ─────────────────────────────────────────────────────────────────────────────
 
-function HRHeadPanel({ letter, onClose, onDone }) {
+export function HRHeadPanel({ letter, onClose, onDone }) {
   const { user } = useAuth();
   const canSign = ['admin', 'hr_head'].includes(user?.role);
   const [remarks, setRemarks] = useState('');
@@ -1548,6 +1548,8 @@ function HRHeadPanel({ letter, onClose, onDone }) {
   const [message, setMessage] = useState('');
   const [edits, setEdits] = useState({});
   const [loading, setLoading] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [idLoading, setIdLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
@@ -1556,6 +1558,7 @@ function HRHeadPanel({ letter, onClose, onDone }) {
   const [chairmanSignature, setChairmanSignature] = useState(null); // base64 PNG — Chairman
   const [managerId, setManagerId] = useState('');
   const [managers, setManagers] = useState([]);
+  const [emailSent, setEmailSent] = useState(false);
 
   // Load initial preview
   useEffect(() => {
@@ -1641,6 +1644,7 @@ function HRHeadPanel({ letter, onClose, onDone }) {
         chairman_signature: chairmanSignature,
       });
       setSuccess(r.data.message);
+      setTimeout(() => onDone(r.data.message || 'Offer letter issued and emailed.'), 1500);
     } catch (e) { setError(e.response?.data?.error || 'Failed'); }
     finally { setLoading(false); }
   };
@@ -1656,23 +1660,24 @@ function HRHeadPanel({ letter, onClose, onDone }) {
 
   const createID = async () => {
     if (!managerId) { setError('Please assign a manager before creating the ID.'); return; }
-    setLoading(true); setError('');
+    setIdLoading(true); setError('');
     try {
       const r = await axios.post(`/api/letters/${letter._id}/create-id`, { email, role: empRole, manager_id: managerId });
       onDone(`Employee ID created. Login: ${r.data.login_email} · Default password: ${r.data.default_password}`);
     } catch (e) { setError(e.response?.data?.error || 'Failed'); }
-    finally { setLoading(false); }
+    finally { setIdLoading(false); }
   };
   const sendWelcomeEmail = async () => {
-    setLoading(true); setError('');
+    setEmailLoading(true); setError('');
     try {
       await axios.post(`/api/letters/${letter._id}/send-welcome-email`, {
         email,
         employee_name: letter.employee_name,
       });
       setSuccess('Welcome email sent successfully!');
+      setEmailSent(true);
     } catch (e) { setError(e.response?.data?.error || 'Failed to send email'); }
-    finally { setLoading(false); }
+    finally { setEmailLoading(false); }
   };
 
   const STEPS = isRevised
@@ -2030,13 +2035,16 @@ function HRHeadPanel({ letter, onClose, onDone }) {
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={onClose}>Close</button>
-              <button disabled={loading} onClick={sendWelcomeEmail}
-                style={{ padding: '9px 18px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 'var(--radius)', cursor: loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600 }}>
-                {loading ? 'Sending…' : '✉ Send Email'}
+              <button disabled={emailLoading || emailSent} onClick={sendWelcomeEmail}
+                style={{ padding: '9px 18px', background: emailSent ? 'var(--green)' : 'var(--accent)', color: '#fff', border: 'none', borderRadius: 'var(--radius)', cursor: (emailLoading || emailSent) ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600 }}>
+                {emailLoading ? 'Sending…' : emailSent ? '✓ Email Sent' : '✉ Send Email'}
               </button>
-              <button disabled={loading} onClick={createID}
-                style={{ padding: '9px 18px', background: 'var(--amber)', color: '#000', border: 'none', borderRadius: 'var(--radius)', cursor: loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600 }}>
-                {loading ? 'Creating…' : '⊕ Create Employee ID'}
+              <button
+                disabled={idLoading || !emailSent}
+                onClick={createID}
+                title={!emailSent ? 'Send the welcome email first' : ''}
+                style={{ padding: '9px 18px', background: emailSent ? 'var(--amber)' : 'var(--border)', color: emailSent ? '#000' : 'var(--text-dim)', border: 'none', borderRadius: 'var(--radius)', cursor: (!emailSent || idLoading) ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600 }}>
+                {idLoading ? 'Creating…' : !emailSent ? '🔒 Create Employee ID' : '⊕ Create Employee ID'}
               </button>
             </div>
           </>
@@ -2309,14 +2317,14 @@ export default function LettersPage() {
   const onHRDone = (msg) => { setHRTarget(null); load(); notify(msg); };
   const onDelDone = (msg) => { setDeleteT(null); load(); notify(msg); };
 
-  const submitLetter = async () => {
+  const submitLetter = async (letterOverride) => {
+    const target = letterOverride || submitT;
     try {
-      await axios.post(`/api/letters/${submitT._id}/submit`, {});
+      await axios.post(`/api/letters/${target._id}/submit`, {});
       setSubmitT(null); load();
       notify('Submitted to HR Head for approval.');
     } catch (e) { setError(e.response?.data?.error || 'Submit failed'); }
   };
-
   const dl = (id, fmt) =>
     axios.get(`/api/letters/${id}/download?format=${fmt}`, { responseType: 'blob' })
       .then(r => {
@@ -2456,7 +2464,9 @@ export default function LettersPage() {
                           <button className="btn btn-sm btn-secondary" onClick={() => dl(l._id, 'docx')}>↓ DOCX</button>
                           {postApr && <button className="btn btn-sm btn-secondary" onClick={() => dl(l._id, 'pdf')}>↓ PDF</button>}
                           {l.status === 'draft' && (
-                            <button className="btn btn-sm btn-primary" onClick={() => setSubmitT(l)}>Submit</button>
+                            <button className="btn btn-sm btn-primary" onClick={() =>
+                              ['admin', 'hr_head'].includes(user?.role) ? submitLetter(l) : setSubmitT(l)
+                            }>Submit</button>
                           )}
                           {isHRHead && (pending || postApr) && (
                             <button className="btn btn-sm btn-secondary"

@@ -89,7 +89,7 @@ function ClearanceBar({ emp }) {
 // ─── Shared: Employee resignation status card ─────────────────────────────────
 // Used by both EmployeeExitView and ManagerExitView (for their own status)
 
-function MyResignationStatus({ myStatus, onResign, onDownload, downloading }) {
+function MyResignationStatus({ myStatus, onResign, onDownload, downloading, docsApproved }) {
   const status = myStatus?.status;
   const inPipeline = myStatus?.in_exit_pipeline;
 
@@ -101,7 +101,18 @@ function MyResignationStatus({ myStatus, onResign, onDownload, downloading }) {
             <div style={{ fontWeight: 700, fontSize: 15 }}>My Resignation</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>No active resignation on record</div>
           </div>
-          <button className="btn btn-primary" onClick={onResign}>+ Apply for Resignation</button>
+          {docsApproved ? (
+            <button className="btn btn-primary" onClick={onResign}>+ Apply for Resignation</button>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+              <button className="btn btn-secondary" disabled style={{ cursor: 'not-allowed', opacity: 0.6 }}>
+                🔒 Apply for Resignation
+              </button>
+              <div style={{ fontSize: 11, color: 'var(--amber)', textAlign: 'right', maxWidth: 220 }}>
+                Documents must be uploaded and approved by HR before you can resign.
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -207,10 +218,17 @@ function EmployeeExitView() {
   const [loading, setLoading] = useState(true);
   const [showResign, setShowResign] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [docsApproved, setDocsApproved] = useState(false);
 
   const load = () => {
     setLoading(true);
-    axios.get('/api/exit/my-status').then(r => setMyStatus(r.data)).catch(() => { }).finally(() => setLoading(false));
+    Promise.all([
+      axios.get('/api/exit/my-status'),
+      axios.get('/api/documents/my'),
+    ]).then(([exitRes, docsRes]) => {
+      setMyStatus(exitRes.data);
+      setDocsApproved(docsRes.data?.submission?.status === 'approved');
+    }).catch(() => { }).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
@@ -244,6 +262,7 @@ function EmployeeExitView() {
         onResign={() => setShowResign(true)}
         onDownload={download}
         downloading={downloading}
+        docsApproved={docsApproved}
       />
 
       {showResign && (
@@ -292,11 +311,10 @@ function EmployeeResignModal({ onClose, onDone }) {
               onChange={e => setForm({ ...form, resignation_date: e.target.value })} />
           </div>
           <div className="form-group">
-            <label className="form-label">Exit Reason *</label>
+            <label className="form-label">Exit Reason</label>
             <textarea
-              required                          // ← add this
               value={form.exit_reason}
-              onChange={e => setExitReason(e.target.value)}
+              onChange={e => setForm({ ...form, exit_reason: e.target.value })}
               placeholder="Describe your reason for resignation..."
               rows={3}
               style={{ width: '100%', resize: 'vertical' }}
@@ -329,17 +347,17 @@ function ManagerExitView() {
   const [myLoading, setMyLoading] = useState(true);
   const [showResign, setShowResign] = useState(false);
   const [downloading, setDownloading] = useState(false);
-
-  // const [pending,      setPending]      = useState([]);
-  // const [pipeline,     setPipeline]     = useState([]);
-  // const [teamLoading,  setTeamLoading]  = useState(true);
-  // const [activeTab,    setActiveTab]    = useState('approvals');
-  // const [rejectTarget, setRejectTarget] = useState(null);
-  // const [success,      setSuccess]      = useState('');
+  const [docsApproved, setDocsApproved] = useState(false);
 
   const loadMyStatus = () => {
     setMyLoading(true);
-    axios.get('/api/exit/my-status').then(r => setMyStatus(r.data)).catch(() => { }).finally(() => setMyLoading(false));
+    Promise.all([
+      axios.get('/api/exit/my-status'),
+      axios.get('/api/documents/my'),
+    ]).then(([exitRes, docsRes]) => {
+      setMyStatus(exitRes.data);
+      setDocsApproved(docsRes.data?.submission?.status === 'approved');
+    }).catch(() => { }).finally(() => setMyLoading(false));
   };
 
   // const loadTeam = () => {
@@ -396,6 +414,7 @@ function ManagerExitView() {
             onResign={() => setShowResign(true)}
             onDownload={downloadRelieving}
             downloading={downloading}
+            docsApproved={docsApproved}
           />
         )}
       </div>

@@ -39,6 +39,14 @@ app.register_blueprint(exit_bp,               url_prefix='/api/exit')
 app.register_blueprint(appointment_orders_bp, url_prefix='/api/appointment-orders')
 app.register_blueprint(documents_bp,          url_prefix='/api/documents')
 
+@app.route('/')
+def index():
+    return {
+        'status': 'ok',
+        'message': 'HR Automation API is running',
+        'version': '1.0.0'
+    }
+
 @app.errorhandler(404)
 def not_found(e):    return {'error': 'Not found'}, 404
 
@@ -46,11 +54,11 @@ def not_found(e):    return {'error': 'Not found'}, 404
 def server_error(e): return {'error': 'Internal server error'}, 500
 
 # ── TEST ONLY — remove before production ─────────────────────────────────────
-from flask import jsonify
-@app.route('/api/test-scheduler')
-def test_scheduler():
-    from scheduler import run_checks_now
-    return jsonify(run_checks_now(app))
+# from flask import jsonify
+# @app.route('/api/test-scheduler')
+# def test_scheduler():
+#     from scheduler import run_checks_now
+#     return jsonify(run_checks_now(app))
 
 # ── Start background scheduler (birthday + anniversary emails) ────────────────
 from scheduler import start_scheduler

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 
@@ -47,7 +47,7 @@ const ROLE_BG = {
 const TABS = ['Personal', 'Corporate', 'Emergency'];
 
 // ─── NavLink — logic identical, styles updated ────────────────────────────
-function NavLink({ to, icon, label, currentPath }) {
+function NavLink({ to, icon, label, currentPath, badge }) {
   const isActive = currentPath === to;
   return (
     <button
@@ -56,21 +56,21 @@ function NavLink({ to, icon, label, currentPath }) {
         display: 'flex', alignItems: 'center', gap: 10, width: '100%',
         padding: '8px 12px', borderRadius: 8, marginBottom: 1,
         fontSize: 13.5, fontWeight: isActive ? 600 : 500,
-        color: isActive ? '#2563eb' : '#64748b',
-        background: isActive ? '#eff6ff' : 'transparent',
-        border: `1px solid ${isActive ? '#bfdbfe' : 'transparent'}`,
+        color: isActive ? '#f1f5f9' : '#94a3b8',
+        background: isActive ? 'rgba(255,255,255,0.12)' : 'transparent',
+        border: `1px solid ${isActive ? 'rgba(255,255,255,0.15)' : 'transparent'}`,
         transition: 'all .13s', cursor: 'pointer', textAlign: 'left',
         letterSpacing: '-0.1px',
       }}
       onMouseEnter={e => {
         if (!isActive) {
-          e.currentTarget.style.color = '#1e293b';
-          e.currentTarget.style.background = '#f8fafc';
+          e.currentTarget.style.color = '#e2e8f0';
+          e.currentTarget.style.background = 'rgba(255,255,255,0.07)';
         }
       }}
       onMouseLeave={e => {
         if (!isActive) {
-          e.currentTarget.style.color = '#64748b';
+          e.currentTarget.style.color = '#94a3b8';
           e.currentTarget.style.background = 'transparent';
         }
       }}
@@ -83,7 +83,18 @@ function NavLink({ to, icon, label, currentPath }) {
       }}>
         {icon}
       </span>
-      {label}
+      <span style={{ flex: 1 }}>{label}</span>
+      {badge > 0 && (
+        <span style={{
+          background: '#ef4444', color: '#fff',
+          fontSize: 10, fontWeight: 700,
+          borderRadius: 99, minWidth: 18, height: 18,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '0 5px', lineHeight: 1, flexShrink: 0,
+        }}>
+          {badge > 99 ? '99+' : badge}
+        </span>
+      )}
     </button>
   );
 }
@@ -112,7 +123,7 @@ function ProfileModal({ onClose }) {
   const [form, setForm] = useState({
     name: user?.name || '',
     phone: user?.phone || '',
-    personal_email: user?.personal_email || '',
+    personal_email: user?.personal_email || user?.email || '',
     gender: user?.gender || '',
     blood_group: user?.blood_group || '',
     birthday: user?.birthday || '',
@@ -381,10 +392,33 @@ const isProfileComplete = (u) =>
 export default function Layout({ children, currentPath }) {
   const { user, logout } = useAuth();
   const [showProfile, setShowProfile] = useState(false);
+  const [approvalCount, setApprovalCount] = useState(0);
   const rc = ROLE_COLOR[user?.role] || '#4f8ef7';
 
   const needsProfileGate = ['employee', 'manager'].includes(user?.role) && !isProfileComplete(user);
   const rbg = ROLE_BG[user?.role] || 'rgba(37,99,235,.10)';
+
+  // Fetch total pending approval count for sidebar badge (only when logged in)
+  useEffect(() => {
+    if (!user?._id || user.role === 'employee') return;
+    const role = user.role;
+    const isMgr = role === 'manager';
+    const isHR = ['admin', 'hr_head', 'hr'].includes(role);
+
+    Promise.all([
+      isHR ? axios.get('/api/approvals/pending').catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+      isHR ? axios.get('/api/appointment-orders/').catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+      isHR ? axios.get('/api/documents/submissions?status=pending_hr').catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+      isMgr ? axios.get('/api/approvals/pending').catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+      isMgr ? axios.get('/api/exit/pending-approvals').catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+    ]).then(([pending, ao, docs, mgrPending, resign]) => {
+      const pendingCount = (pending.data || []).length;
+      const aoCount = (ao.data || []).filter(o => o.status === 'pending_hr_head').length;
+      const docsCount = (docs.data || []).length;
+      const resignCount = (resign.data || []).length;
+      setApprovalCount(pendingCount + aoCount + docsCount + resignCount);
+    });
+  }, [user?._id]);
 
   const NAV = user?.role === 'employee' ? NAV_EMPLOYEE
     : user?.role === 'manager' ? NAV_MANAGER
@@ -396,15 +430,15 @@ export default function Layout({ children, currentPath }) {
       {/* ══ Sidebar ══ */}
       <aside style={{
         width: 228, flexShrink: 0,
-        background: '#ffffff',
-        borderRight: '1px solid #e2e8f0',
+        background: '#334155',
+        borderRight: '1px solid #1e293b',
         display: 'flex', flexDirection: 'column',
       }}>
 
         {/* Logo */}
         <div style={{
           padding: '18px 18px 16px',
-          borderBottom: '1px solid #e2e8f0',
+          borderBottom: '1px solid rgba(255,255,255,0.08)',
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
           <img
@@ -418,7 +452,7 @@ export default function Layout({ children, currentPath }) {
           <div>
             <div style={{
               fontFamily: 'var(--display)', fontWeight: 800,
-              fontSize: 15, letterSpacing: '-0.4px', color: '#0f172a', lineHeight: 1,
+              fontSize: 15, letterSpacing: '-0.4px', color: '#f1f5f9', lineHeight: 1,
             }}>
               HR Automation
             </div>
@@ -437,19 +471,24 @@ export default function Layout({ children, currentPath }) {
         {/* Nav */}
         <nav style={{ flex: 1, padding: '10px', overflowY: 'auto' }}>
           <div style={{
-            fontSize: 9.5, fontWeight: 700, color: '#cbd5e1',
+            fontSize: 9.5, fontWeight: 700, color: '#64748b',
             textTransform: 'uppercase', letterSpacing: '1.2px',
             padding: '8px 12px 5px',
           }}>
             Menu
           </div>
           {NAV.map(item => (
-            <NavLink key={item.to} {...item} currentPath={currentPath} />
+            <NavLink
+              key={item.to}
+              {...item}
+              currentPath={currentPath}
+              badge={item.to === '/approvals' ? approvalCount : 0}
+            />
           ))}
         </nav>
 
         {/* User block */}
-        <div style={{ padding: '10px 10px 12px', borderTop: '1px solid #e2e8f0' }}>
+        <div style={{ padding: '10px 10px 12px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
 
           {/* Profile button — click handler unchanged */}
           <button
@@ -462,8 +501,8 @@ export default function Layout({ children, currentPath }) {
               cursor: 'pointer', transition: 'all .13s', textAlign: 'left',
             }}
             onMouseEnter={e => {
-              e.currentTarget.style.background = '#f8fafc';
-              e.currentTarget.style.borderColor = '#e2e8f0';
+              e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
+              e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
             }}
             onMouseLeave={e => {
               e.currentTarget.style.background = 'transparent';
@@ -484,21 +523,21 @@ export default function Layout({ children, currentPath }) {
             {/* Name / role */}
             <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{
-                fontSize: 12.5, fontWeight: 600, color: '#0f172a',
+                fontSize: 12.5, fontWeight: 600, color: '#f1f5f9',
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 letterSpacing: '-0.1px',
               }}>
                 {user?.name}
               </div>
               <div style={{
-                fontSize: 10, color: rc, fontFamily: 'var(--mono)',
+                fontSize: 10, color: '#94a3b8', fontFamily: 'var(--mono)',
                 textTransform: 'uppercase', letterSpacing: '0.6px', marginTop: 1,
               }}>
                 {user?.role}
               </div>
             </div>
 
-            <span style={{ fontSize: 12, color: '#cbd5e1', flexShrink: 0 }}>›</span>
+            <span style={{ fontSize: 12, color: '#64748b', flexShrink: 0 }}>›</span>
           </button>
 
           {/* Sign out — click handler unchanged */}
@@ -506,7 +545,7 @@ export default function Layout({ children, currentPath }) {
             onClick={() => { logout(); window.location.hash = '/'; }}
             style={{
               width: '100%', padding: '7px 10px', borderRadius: 8,
-              background: 'transparent', border: '1px solid #e2e8f0',
+              background: 'transparent', border: '1px solid rgba(255,255,255,0.12)',
               color: '#94a3b8', fontSize: 12.5, fontWeight: 500,
               cursor: 'pointer', transition: 'all .13s',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -517,7 +556,7 @@ export default function Layout({ children, currentPath }) {
               e.currentTarget.style.background = '#fef2f2';
             }}
             onMouseLeave={e => {
-              e.currentTarget.style.borderColor = '#e2e8f0';
+              e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
               e.currentTarget.style.color = '#94a3b8';
               e.currentTarget.style.background = 'transparent';
             }}
