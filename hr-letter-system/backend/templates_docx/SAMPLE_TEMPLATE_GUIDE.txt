@@ -1,0 +1,29 @@
+This is a reference for creating sample DOCX templates. Create a Word document with this content:
+
+---
+[Company Letterhead]
+
+Date: {{date}}
+
+To,
+{{employee_name}}
+
+Subject: Offer of Employment
+
+Dear {{employee_name}},
+
+We are pleased to offer you the position of {{designation}} at {{company_name}}, Department of {{department}}.
+
+Your employment will commence on {{joining_date}}.
+
+Your annual Cost to Company (CTC) will be INR {{ctc}}/- per annum.
+
+Please confirm your acceptance by signing and returning a copy of this letter.
+
+Sincerely,
+HR Department
+{{company_name}}
+---
+
+Save as: offer_template.docx
+Use {{placeholder}} syntax exactly as shown.

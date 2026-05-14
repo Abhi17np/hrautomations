@@ -1,9 +1,26 @@
-node_modules/
-frontend/node_modules/
-backend/node_modules/
-backend/.env
+# ENV (Secrets)
 .env
-*.pyc
-__pycache__/
-backend/storage/
-*.log
+.env.*
+**/.env
+
+# Node
+**/node_modules/
+dist/
+build/
+
+# Python
+**/venv/
+**/__pycache__/
+**/*.pyc
+
+# Storage (local files)
+**/storage/
+
+# Logs
+**/*.log
+
+# OS / IDE
+**/.vscode/
+**/.idea/
+.DS_Store
+Thumbs.db
