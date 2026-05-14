@@ -1,5 +1,6 @@
 """
-letters.py — Complete Offer Letter module
+letters.py 
+ Complete Offer Letter module
 New features vs previous version:
   - CTC breakdown calculator (Basic/HRA/DA/DA/PF/GHI/Other)
   - letter_subtype: 'new' | 'revised'
@@ -7,43 +8,38 @@ New features vs previous version:
   - HR Head inline edit before approval
   - Send email to candidate after approval
   - Confirm join + Create employee login ID (role='employee')
+  - GridFS storage for generated DOCX/PDF files
 """
 
 from flask import Blueprint, request, jsonify, current_app, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 from bson import ObjectId
-import os, smtplib, bcrypt, logging
+import os, smtplib, bcrypt, logging, base64, io, traceback, tempfile, gridfs
+from io import BytesIO
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-
+import subprocess
+import shutil
+from docx import Document as DocxDocument
+from html.parser import HTMLParser
 from services.letter_generator import generate_letter_docx, generate_letter_pdf
+from services.gridfs_storage import save_file_to_gridfs, serve_from_gridfs, delete_from_gridfs
 
 letters_bp = Blueprint('letters', __name__)
 log = logging.getLogger(__name__)
 
-ACTIVE_STATUSES    = {'draft', 'pending_hr_head', 'rejected', 'approved', 'issued'}
-COMPLETED_STATUSES = {'joined', 'withdrawn'}
+ACTIVE_STATUSES    = {'draft', 'pending_hr_head', 'rejected', 'approved', 'issued', 'joined'}
+COMPLETED_STATUSES = {'id_created', 'withdrawn'}
 DELETABLE_STATUSES = {'draft', 'rejected'}
 DELETE_ROLES       = {'admin', 'hr_head'}
 
 
-# ── CTC Calculator ────────────────────────────────────────────────────────────
-
 def calculate_ctc_breakdown(annual_ctc, avail_pf=True, ghi_annual=0.0, metro=False):
-    """
-    Indian payroll salary breakdown from annual CTC (all amounts in INR).
-    Basic = 48% of CTC
-    HRA   = 40% of Basic (non-metro) | 50% (metro)
-    DA    = 20% of Basic
-    Employer PF = min(12% of monthly Basic, 1800) * 12  [if opted in]
-    GHI   = user-supplied annual premium
-    Other = CTC - Basic - HRA - DA - PF - GHI  (absorbs remainder)
-    """
     ctc          = float(annual_ctc)
-    basic_a      = round(ctc * 0.48)
+    basic_a      = round(ctc * 0.50)
     basic_m      = round(basic_a / 12)
     hra_a        = round(basic_a * (0.50 if metro else 0.40))
     hra_m        = round(hra_a / 12)
@@ -107,7 +103,6 @@ def _ctc_to_ctx(ctx, bd):
         'other_allowances_fmt':     _inr(bd['other_allowances']),
         'gross_monthly_fmt':        _inr(bd['gross_monthly']),
         'net_annual_fmt':           _inr(bd['net_annual']),
-        # Annexure table placeholders
         'basic_m':       _inr(bd['basic_monthly']),
         'basic_y':       _inr(bd['basic']),
         'hra_m':         _inr(bd['hra_monthly']),
@@ -118,14 +113,14 @@ def _ctc_to_ctx(ctx, bd):
         'other_y':       _inr(bd['other_allowances']),
         'gross_m':       _inr(bd['gross_monthly']),
         'gross_y':       _inr(bd['net_annual']),
-        'pf_employer_m': _inr(bd['employer_pf_monthly']),
-        'pf_employer_y': _inr(bd['employer_pf']),
-        'additions_m':   _inr(additions_m),
-        'additions_y':   _inr(additions_y),
+        'pf_employer_m': _inr(bd['employer_pf_monthly']) if bd['employer_pf_monthly'] else '-',
+        'pf_employer_y': _inr(bd['employer_pf'])         if bd['employer_pf']         else '-',
+        'additions_m':   _inr(additions_m)               if additions_m               else '-',
+        'additions_y':   _inr(additions_y)               if additions_y               else '-',
         'total_ctc_m':   _inr(total_ctc_m),
         'total_ctc_y':   _inr(bd['ctc']),
-        'pf_employee_m': _inr(emp_pf_m),
-        'pf_employee_y': _inr(emp_pf_m * 12),
+        'pf_employee_m': _inr(emp_pf_m)                  if emp_pf_m                  else '-',
+        'pf_employee_y': _inr(emp_pf_m * 12)             if emp_pf_m                  else '-',
         'prof_tax_m':    _inr(prof_tax_m),
         'prof_tax_y':    _inr(prof_tax_m * 12),
         'deductions_m':  _inr(total_ded_m),
@@ -135,8 +130,6 @@ def _ctc_to_ctx(ctx, bd):
     })
     return ctx
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _enrich(letter, db):
     letter['_id'] = str(letter['_id'])
@@ -163,6 +156,30 @@ def _next_version(db, emp_id):
     return (latest['version'] + 1) if latest else 1
 
 
+def _get_template_path(tmpl, tmp_dir):
+    """Write template to a temp file and return its path.
+    Supports both GridFS-stored templates (new) and disk-stored templates (legacy)."""
+    path = os.path.join(tmp_dir, tmpl.get('filename', 'template.docx'))
+
+    if tmpl.get('gridfs_id'):
+        # New: fetch from GridFS
+        fs = gridfs.GridFS(current_app.db, collection='templates_fs')
+        grid_out = fs.get(ObjectId(tmpl['gridfs_id']))
+        with open(path, 'wb') as f:
+            f.write(grid_out.read())
+        return path
+
+    elif tmpl.get('file_path') and os.path.exists(tmpl['file_path']):
+        # Legacy: file still on disk
+        return tmpl['file_path']
+
+    else:
+        raise ValueError(
+            f"Template '{tmpl.get('name', 'unknown')}' has no accessible file. "
+            "Please re-upload the template."
+        )
+
+
 def _gen_files(emp, tmpl, ctx, db, emp_id, app):
     ver  = _next_version(db, emp_id)
     year = datetime.now().strftime('%Y')
@@ -171,22 +188,29 @@ def _gen_files(emp, tmpl, ctx, db, emp_id, app):
     base = f"{emp.get('employee_id', emp_id)}_offer_v{ver}"
     dp   = os.path.join(out, base + '.docx')
     pp   = os.path.join(out, base + '.pdf')
-    generate_letter_docx(tmpl['file_path'], ctx, dp)
-    pr   = generate_letter_pdf(dp, pp)
-    return ver, dp, pr
+
+    # Get template from GridFS to temp file
+    tmpl_path = _get_template_path(tmpl, out)
+    generate_letter_docx(tmpl_path, ctx, dp)
+    pr = generate_letter_pdf(dp, pp)
+
+    # Save to GridFS
+    docx_gid = save_file_to_gridfs(dp, base + '.docx')
+    pdf_gid  = save_file_to_gridfs(pr, base + '.pdf') if pr else None
+
+    return ver, dp, pr, docx_gid, pdf_gid
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
 @letters_bp.route('/', methods=['GET'])
 @jwt_required()
 def list_letters():
     db  = current_app.db
     uid = get_jwt_identity()
     caller, _ = _caller(db, uid)
-    query = {'letter_type': 'offer'}
+    include_relieving = request.args.get('include_relieving', 'false').lower() == 'true'
+    query = {} if include_relieving else {'letter_type': 'offer'}
 
-    # Employee role sees only their own letters
-    if caller and caller.get('role') == 'employee':
+    if caller and caller.get('role') in ('employee', 'manager'):
         query['employee_id'] = caller.get('employee_ref', '__none__')
 
     status = request.args.get('status')
@@ -204,6 +228,7 @@ def list_letters():
         query['employee_id'] = emp_id
 
     return jsonify([_enrich(l, db) for l in db.letters.find(query).sort('created_at', -1)])
+
 
 @letters_bp.route('/<lid>/preview-context', methods=['GET'])
 @jwt_required()
@@ -229,28 +254,97 @@ def preview_pdf(lid):
     if not letter:
         return jsonify({'error': 'Not found'}), 404
 
+    # Serve from GridFS if available
+    if letter.get('pdf_gridfs_id'):
+        return serve_from_gridfs(
+            letter['pdf_gridfs_id'],
+            download_name=os.path.basename(letter.get('pdf_path', 'letter.pdf')),
+            mimetype='application/pdf',
+            as_attachment=False,
+        )
+
+    # Fallback: disk
     pdf_path  = letter.get('pdf_path')
     docx_path = letter.get('docx_path')
 
     if pdf_path and os.path.exists(pdf_path):
-        return send_file(pdf_path, mimetype='application/pdf')
+        if docx_path and os.path.exists(docx_path):
+            if os.path.getmtime(docx_path) <= os.path.getmtime(pdf_path):
+                return send_file(pdf_path, mimetype='application/pdf')
+        else:
+            return send_file(pdf_path, mimetype='application/pdf')
 
     if docx_path and os.path.exists(docx_path):
-        tmp_pdf = docx_path.replace('.docx', '_preview.pdf')
-        result  = generate_letter_pdf(docx_path, tmp_pdf)
+        out_pdf = docx_path.replace('.docx', '_preview.pdf')
+        result  = generate_letter_pdf(docx_path, out_pdf)
+        if result and os.path.exists(result):
+            gid = save_file_to_gridfs(result, os.path.basename(result))
+            db.letters.update_one(
+                {'_id': ObjectId(lid)},
+                {'$set': {'pdf_path': result, 'pdf_gridfs_id': gid, 'updated_at': datetime.utcnow()}}
+            )
+            return send_file(result, mimetype='application/pdf')
+        log.warning(f'PDF generation failed for letter {lid} - serving DOCX fallback')
+        return jsonify({
+            'error': 'pdf_unavailable',
+            'docx_url': f'/api/letters/{lid}/download?format=docx',
+        }), 202
+
+    if docx_path and not os.path.exists(docx_path):
+        # Try GridFS
+        if letter.get('docx_gridfs_id'):
+            return serve_from_gridfs(
+                letter['docx_gridfs_id'],
+                download_name=os.path.basename(docx_path),
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                as_attachment=False,
+            )
+        return jsonify({'error': f'DOCX file missing: {docx_path}'}), 404
+
+    return jsonify({'error': 'No document available for preview - regenerate the letter'}), 404
+
+
+@letters_bp.route('/<lid>/preview-with-signatures', methods=['POST'])
+@jwt_required()
+def preview_with_signatures(lid):
+    db     = current_app.db
+    letter = db.letters.find_one({'_id': ObjectId(lid)})
+    if not letter:
+        return jsonify({'error': 'Not found'}), 404
+
+    data           = request.json or {}
+    hr_sig         = data.get('hr_signature', '')
+    chairman_sig   = data.get('chairman_signature', '')
+
+    tmpl = db.templates.find_one({'_id': ObjectId(letter['template_id'])})
+    if not tmpl:
+        return jsonify({'error': 'Template not found'}), 404
+
+    ctx = {**letter.get('context', {})}
+    if hr_sig:       ctx['hr_signature']       = hr_sig
+    if chairman_sig: ctx['chairman_signature'] = chairman_sig
+
+    tmp_dir  = tempfile.mkdtemp()
+    try:
+        tmpl_path = _get_template_path(tmpl, tmp_dir)
+        tmp_docx  = os.path.join(tmp_dir, 'sig_preview.docx')
+        tmp_pdf   = os.path.join(tmp_dir, 'sig_preview.pdf')
+        generate_letter_docx(tmpl_path, ctx, tmp_docx)
+        result = generate_letter_pdf(tmp_docx, tmp_pdf)
         if result and os.path.exists(result):
             return send_file(result, mimetype='application/pdf')
-
-    return jsonify({'error': 'No document available for preview'}), 404
+        return jsonify({'error': 'pdf_unavailable',
+                        'docx_url': f'/api/letters/{lid}/download?format=docx'}), 202
+    except Exception as e:
+        log.error(f'Signature preview failed: {e}')
+        return jsonify({'error': str(e)}), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @letters_bp.route('/<lid>/update-draft', methods=['POST'])
 @jwt_required()
 def update_draft(lid):
-    """
-    HR edits a draft or rejected letter — updates context fields and
-    regenerates the DOCX in place. Only allowed on draft or rejected status.
-    """
     db   = current_app.db
     uid  = get_jwt_identity()
     data = request.json or {}
@@ -275,19 +369,22 @@ def update_draft(lid):
 
     try:
         emp_id = str(emp['_id'])
-        ver, dp, pr = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
+        ver, dp, pr, docx_gid, pdf_gid = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
     except Exception as e:
         return jsonify({'error': f'Regeneration failed: {e}'}), 500
 
     db.letters.update_one({'_id': ObjectId(lid)}, {'$set': {
-        'context':    ctx,
-        'docx_path':  dp,
-        'pdf_path':   pr,
-        'version':    ver,
-        'status':     'draft',
-        'updated_at': datetime.utcnow(),
+        'context':       ctx,
+        'docx_path':     dp,
+        'pdf_path':      pr,
+        'docx_gridfs_id': docx_gid,
+        'pdf_gridfs_id':  pdf_gid,
+        'version':       ver,
+        'status':        'draft',
+        'updated_at':    datetime.utcnow(),
     }})
     return jsonify({'message': 'Draft updated', 'version': ver})
+
 
 @letters_bp.route('/ctc-breakdown', methods=['POST'])
 @jwt_required()
@@ -307,17 +404,30 @@ def ctc_breakdown():
     )
     return jsonify(bd)
 
+
+def _format_acceptance_date(date_str):
+    try:
+        for fmt in ('%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y'):
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return date_str
+        day = dt.day
+        if 11 <= day <= 13:
+            suffix = 'th'
+        else:
+            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+        return f"{day}{suffix} {dt.strftime('%B %Y')}"
+    except Exception:
+        return date_str
+
+
 @letters_bp.route('/generate-new', methods=['POST'])
 @jwt_required()
 def generate_new():
-    """
-    Pure placeholder-fill flow.
-    Receives template_id + a flat `fields` dict whose keys are the exact
-    placeholder names from the template (without the {{ }}).
-    Every field is user-entered — no auto-fill logic.
-    The employee record is built by probing common alias names for each field.
-    No specific placeholder name is required — generation never blocked by naming.
-    """
     db   = current_app.db
     uid  = get_jwt_identity()
     data = request.json or {}
@@ -334,8 +444,6 @@ def generate_new():
     if not tmpl:  return jsonify({'error': 'Template not found'}), 404
     if not tmpl.get('is_active'): return jsonify({'error': 'Template is inactive'}), 400
 
-    # Validate all template placeholders are present in the submitted fields
-    # (skip date and employee_id — always auto-set)
     tmpl_placeholders = [p.lower() for p in (tmpl.get('placeholders') or [])]
     field_keys = {k.lower(): k for k in fields.keys()}
 
@@ -363,10 +471,6 @@ def generate_new():
     if missing:
         return jsonify({'error': f'Missing fields: {", ".join(missing)}'}), 400
 
-    # ── Build internal employee record ────────────────────────────────────────
-    # Try multiple common placeholder aliases for each field.
-    # Falls back to a safe default so letter generation is NEVER blocked by
-    # the user's choice of placeholder names in their template.
     from routes.employees import _next_emp_id
     emp_id_code = _next_emp_id(db)
 
@@ -378,18 +482,14 @@ def generate_new():
         return default
 
     emp_data = {
-        'name':             _pick('candidate_name', 'employee_name', 'name',
-                                  'full_name', 'applicant_name', default='Candidate'),
-        'designation':      _pick('designation', 'post', 'position',
-                                  'job_title', 'role', default=''),
+        'name':             _pick('candidate_name', 'employee_name', 'name', 'full_name', 'applicant_name', default='Candidate'),
+        'designation':      _pick('designation', 'post', 'position', 'job_title', 'role', default=''),
         'department':       _pick('department', 'dept', 'division', default=''),
         'email':            _pick('email', 'candidate_email', 'employee_email', default=''),
-        'joining_date':     _pick('joining_date', 'date_of_joining', 'doj',
-                                  'start_date', default=''),
-        'address':          _pick('address', 'residential_address',
-                                  'permanent_address', default=''),
+        'joining_date':     _pick('joining_date', 'date_of_joining', 'doj', 'start_date', default=''),
+        'address':          _pick('address', 'residential_address', 'permanent_address', default=''),
         'probation_period': _pick('probation_period', 'probation', default='6'),
-        'notice_period':    _pick('notice_period', 'notice', default='30'),
+        'notice_period':    _pick('notice_period', 'notice', default='60'),
         'employee_id':      emp_id_code,
         'status':           'active',
         'visible':          False,
@@ -401,28 +501,35 @@ def generate_new():
     emp_id  = str(emp_res.inserted_id)
     emp     = db.employees.find_one({'_id': emp_res.inserted_id})
 
-    # ── Build DOCX context ────────────────────────────────────────────────────
-    # Start with every user-filled field, then inject auto-set system fields.
     ctx = {k.lower(): v for k, v in fields.items()}
     ctx['employee_id'] = emp_id_code
     ctx['date']        = fields.get('date') or datetime.now().strftime('%d-%m-%Y')
 
-    # Auto-calculate CTC breakdown and inject all table placeholders
+    if ctx.get('acceptance_date'):
+        ctx['acceptance_date'] = _format_acceptance_date(ctx['acceptance_date'])
+    if ctx.get('joining_date'):
+        ctx['joining_date'] = _format_acceptance_date(ctx['joining_date'])
+    if ctx.get('date'):
+        ctx['date'] = _format_acceptance_date(ctx['date'])
+
+    bd = {}
+    raw_ctc = 0
     try:
-        raw_ctc = float(ctx.get('ctc') or 0)
+        raw_ctc  = float(ctx.get('ctc') or 0)
         if raw_ctc > 0:
-            bd  = calculate_ctc_breakdown(raw_ctc, avail_pf=True, ghi_annual=0, metro=False)
+            avail_pf = data.get('avail_pf', True)
+            bd  = calculate_ctc_breakdown(raw_ctc, avail_pf=avail_pf, ghi_annual=0, metro=False)
             ctx = _ctc_to_ctx(ctx, bd)
-            log.info(f'CTC breakdown injected for ctc={raw_ctc}')
     except Exception as e:
         log.warning(f'CTC breakdown injection failed: {e}')
 
     try:
-        ver, dp, pr = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
-        
+        ver, dp, pr, docx_gid, pdf_gid = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
     except Exception as e:
+        tb = traceback.format_exc()
+        log.error(f'Document generation failed:\n{tb}')
         db.employees.delete_one({'_id': emp_res.inserted_id})
-        return jsonify({'error': f'Document generation failed: {e}'}), 500
+        return jsonify({'error': f'Document generation failed: {e}', 'traceback': tb}), 500
 
     result = db.letters.insert_one({
         'employee_id':    emp_id,
@@ -431,8 +538,9 @@ def generate_new():
         'letter_subtype': 'new',
         'status':         'draft',
         'approval_history': [],
-        'docx_path':  dp, 'pdf_path': pr,
-        'context':    ctx, 'breakdown': {},
+        'docx_path':       dp,     'pdf_path':       pr,
+        'docx_gridfs_id':  docx_gid, 'pdf_gridfs_id': pdf_gid,
+        'context':    ctx, 'breakdown': bd,
         'version':    ver, 'generated_by': uid,
         'candidate_email': emp_data['email'],
         'created_at': datetime.utcnow(),
@@ -444,7 +552,6 @@ def generate_new():
         'version':       ver,
         'has_pdf':       pr is not None,
     }), 201
-
 
 
 @letters_bp.route('/generate', methods=['POST'])
@@ -483,7 +590,7 @@ def generate():
         'joining_date': data.get('joining_date') or emp.get('joining_date', ''),
         'address': emp.get('address', ''),
         'probation_period': str(emp.get('probation_period', '6')),
-        'notice_period': str(emp.get('notice_period', '30')),
+        'notice_period': str(emp.get('notice_period', '60')),
         'company_name': data.get('company_name', 'Acme Corp'),
         'hr_signatory_name': data.get('hr_signatory_name', ''),
         'hr_signatory_designation': data.get('hr_signatory_designation', 'HR Manager'),
@@ -496,7 +603,7 @@ def generate():
         db.employees.update_one({'_id': ObjectId(emp_id)}, {'$set': {'ctc': ctc}})
 
     try:
-        ver, dp, pr = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
+        ver, dp, pr, docx_gid, pdf_gid = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
     except Exception as e:
         return jsonify({'error': f'Document generation failed: {e}'}), 500
 
@@ -505,6 +612,7 @@ def generate():
         'letter_type': 'offer', 'letter_subtype': 'new',
         'status': 'draft', 'approval_history': [],
         'docx_path': dp, 'pdf_path': pr,
+        'docx_gridfs_id': docx_gid, 'pdf_gridfs_id': pdf_gid,
         'context': ctx, 'breakdown': bd,
         'version': ver, 'generated_by': uid,
         'candidate_email': data.get('candidate_email') or emp.get('email', ''),
@@ -514,7 +622,6 @@ def generate():
                     'has_pdf': pr is not None, 'breakdown': bd}), 201
 
 
-
 @letters_bp.route('/revise', methods=['POST'])
 @jwt_required()
 def revise():
@@ -522,21 +629,27 @@ def revise():
     uid  = get_jwt_identity()
     data = request.json or {}
 
-    orig_id = data.get('original_letter_id')
-    if not orig_id: return jsonify({'error': 'original_letter_id required'}), 400
+    orig_id    = data.get('original_letter_id')
+    emp_id_raw = data.get('employee_id')
 
-    orig = db.letters.find_one({'_id': ObjectId(orig_id)})
-    if not orig: return jsonify({'error': 'Original letter not found'}), 404
+    if orig_id:
+        orig = db.letters.find_one({'_id': ObjectId(orig_id)})
+        if not orig: return jsonify({'error': 'Original letter not found'}), 404
+        emp_id = orig['employee_id']
+    elif emp_id_raw:
+        orig   = {}
+        emp_id = emp_id_raw
+    else:
+        return jsonify({'error': 'original_letter_id or employee_id required'}), 400
 
-    emp_id = orig['employee_id']
-    emp    = db.employees.find_one({'_id': ObjectId(emp_id)})
+    emp = db.employees.find_one({'_id': ObjectId(emp_id)})
     if not emp: return jsonify({'error': 'Employee not found'}), 404
 
     tmpl_id = data.get('template_id') or orig.get('template_id')
     tmpl    = db.templates.find_one({'_id': ObjectId(tmpl_id)})
     if not tmpl: return jsonify({'error': 'Template not found'}), 404
 
-    obd = orig.get('breakdown', {})
+    obd = orig.get('breakdown', {}) if isinstance(orig, dict) else {}
     try:
         ctc = float(data.get('annual_ctc') or obd.get('ctc', 0) or 0)
     except (ValueError, TypeError):
@@ -548,19 +661,45 @@ def revise():
             metro=bool(data.get('metro', obd.get('metro', False))))
 
     oc  = orig.get('context', {})
+    full_address = emp.get('address', oc.get('address', ''))
+    addr_parts   = [p.strip() for p in full_address.split(',') if p.strip()]
+
+    emp_profile = {
+        'candidate_name':  emp.get('name', ''),
+        'employee_name':   emp.get('name', ''),
+        'full_name':       emp.get('name', ''),
+        'name':            emp.get('name', ''),
+        'address':         full_address,
+        'address_line1':   addr_parts[0] if len(addr_parts) > 0 else '',
+        'address_line2':   addr_parts[1] if len(addr_parts) > 1 else '',
+        'city':            addr_parts[2] if len(addr_parts) > 2 else emp.get('city', ''),
+        'pincode':         emp.get('pincode', oc.get('pincode', '')),
+        'state':           emp.get('state',   oc.get('state',   '')),
+        'phone':           emp.get('phone',          oc.get('phone', '')),
+        'mobile':          emp.get('phone',          oc.get('mobile', '')),
+        'email':           emp.get('email',          oc.get('email', '')),
+        'candidate_email': emp.get('email',          oc.get('candidate_email', '')),
+        'personal_email':  emp.get('personal_email', oc.get('personal_email', '')),
+        'department':      emp.get('department',  oc.get('department', '')),
+        'employee_id':     emp.get('employee_id', oc.get('employee_id', '')),
+        'emp_code':        emp.get('employee_id', oc.get('emp_code', '')),
+    }
+
     ctx = {
         **oc,
-        'joining_date': data.get('joining_date') or oc.get('joining_date', ''),
-        'company_name': data.get('company_name') or oc.get('company_name', 'Acme Corp'),
-        'hr_signatory_name': data.get('hr_signatory_name') or oc.get('hr_signatory_name', ''),
+        **emp_profile,
+        'designation':     data.get('designation') or oc.get('designation', ''),
+        'joining_date':    data.get('joining_date') or oc.get('joining_date', ''),
+        'company_name':    data.get('company_name') or oc.get('company_name', 'Acme Corp'),
+        'hr_signatory_name':        data.get('hr_signatory_name') or oc.get('hr_signatory_name', ''),
         'hr_signatory_designation': data.get('hr_signatory_designation') or oc.get('hr_signatory_designation', 'HR Manager'),
-        'date': datetime.now().strftime('%d-%m-%Y'),
+        'date': _format_acceptance_date(datetime.now().strftime('%d-%m-%Y')),
         **data.get('extra_fields', {}),
     }
     ctx = _ctc_to_ctx(ctx, bd)
 
     try:
-        ver, dp, pr = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
+        ver, dp, pr, docx_gid, pdf_gid = _gen_files(emp, tmpl, ctx, db, emp_id, current_app)
     except Exception as e:
         return jsonify({'error': f'Document generation failed: {e}'}), 500
 
@@ -570,6 +709,7 @@ def revise():
         'original_letter_id': orig_id,
         'status': 'draft', 'approval_history': [],
         'docx_path': dp, 'pdf_path': pr,
+        'docx_gridfs_id': docx_gid, 'pdf_gridfs_id': pdf_gid,
         'context': ctx, 'breakdown': bd,
         'version': ver, 'generated_by': uid,
         'candidate_email': data.get('candidate_email') or orig.get('candidate_email', '') or emp.get('email', ''),
@@ -578,6 +718,199 @@ def revise():
     return jsonify({'id': str(result.inserted_id), 'version': ver,
                     'has_pdf': pr is not None, 'breakdown': bd}), 201
 
+
+@letters_bp.route('/<lid>/docx-to-html', methods=['GET'])
+@jwt_required()
+def docx_to_html(lid):
+    db = current_app.db
+    letter = db.letters.find_one({'_id': ObjectId(lid)})
+    if not letter:
+        return jsonify({'error': 'Not found'}), 404
+
+    docx_path = letter.get('docx_path')
+    # If disk file missing, restore from GridFS
+    if (not docx_path or not os.path.exists(docx_path)) and letter.get('docx_gridfs_id'):
+        tmp = tempfile.NamedTemporaryFile(suffix='.docx', delete=False)
+        fs = gridfs.GridFS(current_app.db, collection='files_fs')
+        grid_out = fs.get(ObjectId(letter['docx_gridfs_id']))
+        tmp.write(grid_out.read())
+        tmp.flush()
+        docx_path = tmp.name
+
+    if not docx_path or not os.path.exists(docx_path):
+        return jsonify({'error': 'DOCX not found'}), 404
+
+    try:
+        doc = DocxDocument(docx_path)
+        blocks = []
+        for i, para in enumerate(doc.paragraphs):
+            blocks.append({
+                'id':    f'p_{i}',
+                'type':  'para',
+                'text':  para.text,
+                'style': para.style.name if para.style else 'Normal',
+                'bold':  any(r.bold for r in para.runs if r.text.strip()),
+                'align': str(para.alignment) if para.alignment else 'LEFT',
+            })
+        for ti, table in enumerate(doc.tables):
+            for ri, row in enumerate(table.rows):
+                for ci, cell in enumerate(row.cells):
+                    blocks.append({
+                        'id':    f't_{ti}_r_{ri}_c_{ci}',
+                        'type':  'cell',
+                        'text':  cell.text,
+                        'table': ti, 'row': ri, 'col': ci,
+                        'bold':  False,
+                    })
+        return jsonify({'blocks': blocks})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@letters_bp.route('/<lid>/save-html', methods=['POST'])
+@jwt_required()
+def save_html(lid):
+    db = current_app.db
+    letter = db.letters.find_one({'_id': ObjectId(lid)})
+    if not letter:
+        return jsonify({'error': 'Not found'}), 404
+    if letter.get('status') not in ('draft', 'rejected'):
+        return jsonify({'error': 'Only draft or rejected letters can be edited'}), 400
+
+    docx_path = letter.get('docx_path')
+    if not docx_path or not os.path.exists(docx_path):
+        return jsonify({'error': 'DOCX not found'}), 404
+
+    data    = request.json or {}
+    changes = { b['id']: b['text'] for b in data.get('blocks', []) }
+    if not changes:
+        return jsonify({'message': 'Nothing changed'}), 200
+
+    try:
+        doc = DocxDocument(docx_path)
+        for i, para in enumerate(doc.paragraphs):
+            bid = f'p_{i}'
+            if bid not in changes: continue
+            new_text = changes[bid]
+            if para.text == new_text: continue
+            if not para.runs: continue
+            para.runs[0].text = new_text
+            for r in para.runs[1:]: r.text = ''
+        for ti, table in enumerate(doc.tables):
+            for ri, row in enumerate(table.rows):
+                for ci, cell in enumerate(row.cells):
+                    bid = f't_{ti}_r_{ri}_c_{ci}'
+                    if bid not in changes: continue
+                    new_text = changes[bid]
+                    if cell.text == new_text: continue
+                    if cell.paragraphs and cell.paragraphs[0].runs:
+                        cell.paragraphs[0].runs[0].text = new_text
+                        for r in cell.paragraphs[0].runs[1:]: r.text = ''
+                    elif cell.paragraphs:
+                        cell.paragraphs[0].text = new_text
+        doc.save(docx_path)
+
+        pdf_path = letter.get('pdf_path') or docx_path.replace('.docx', '.pdf')
+        pr = generate_letter_pdf(docx_path, pdf_path)
+
+        # Update GridFS
+        docx_gid = save_file_to_gridfs(docx_path, os.path.basename(docx_path))
+        pdf_gid  = save_file_to_gridfs(pr, os.path.basename(pr)) if pr else letter.get('pdf_gridfs_id')
+
+        db.letters.update_one({'_id': ObjectId(lid)}, {'$set': {
+            'pdf_path': pr, 'docx_gridfs_id': docx_gid, 'pdf_gridfs_id': pdf_gid,
+            'updated_at': datetime.utcnow(),
+        }})
+        return jsonify({'message': 'Saved successfully', 'has_pdf': pr is not None})
+    except Exception as e:
+        log.error(f'save_html error: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@letters_bp.route('/<lid>/extract-content', methods=['GET'])
+@jwt_required()
+def extract_content(lid):
+    db = current_app.db
+    letter = db.letters.find_one({'_id': ObjectId(lid)})
+    if not letter:
+        return jsonify({'error': 'Not found'}), 404
+
+    docx_path = letter.get('docx_path')
+    if not docx_path or not os.path.exists(docx_path):
+        return jsonify({'error': 'DOCX file not found'}), 404
+
+    doc = DocxDocument(docx_path)
+    blocks = []
+    for i, para in enumerate(doc.paragraphs):
+        blocks.append({'id': f'para_{i}', 'type': 'paragraph', 'text': para.text,
+                       'style': para.style.name if para.style else 'Normal'})
+    for ti, table in enumerate(doc.tables):
+        for ri, row in enumerate(table.rows):
+            for ci, cell in enumerate(row.cells):
+                blocks.append({'id': f'table_{ti}_row_{ri}_cell_{ci}', 'type': 'table_cell',
+                               'text': cell.text, 'table_index': ti, 'row_index': ri, 'cell_index': ci})
+    return jsonify({'blocks': blocks})
+
+
+@letters_bp.route('/<lid>/save-content', methods=['POST'])
+@jwt_required()
+def save_content(lid):
+    db = current_app.db
+    letter = db.letters.find_one({'_id': ObjectId(lid)})
+    if not letter:
+        return jsonify({'error': 'Not found'}), 404
+    if letter.get('status') not in ('draft', 'rejected'):
+        return jsonify({'error': 'Only draft or rejected letters can be edited'}), 400
+
+    docx_path = letter.get('docx_path')
+    if not docx_path or not os.path.exists(docx_path):
+        return jsonify({'error': 'DOCX file not found'}), 404
+
+    data   = request.json or {}
+    blocks = data.get('blocks', [])
+    if not blocks:
+        return jsonify({'error': 'blocks required'}), 400
+
+    doc = DocxDocument(docx_path)
+    for block in blocks:
+        bid = block.get('id', '')
+        new_text = block.get('text', '')
+        if bid.startswith('para_'):
+            idx = int(bid.split('_')[1])
+            if idx < len(doc.paragraphs):
+                para = doc.paragraphs[idx]
+                if para.runs:
+                    para.runs[0].text = new_text
+                    for r in para.runs[1:]: r.text = ''
+                else:
+                    para.text = new_text
+        elif bid.startswith('table_'):
+            parts = bid.split('_')
+            ti = int(parts[1]); ri = int(parts[3]); ci = int(parts[5])
+            if ti < len(doc.tables):
+                table = doc.tables[ti]
+                if ri < len(table.rows) and ci < len(table.rows[ri].cells):
+                    cell = table.rows[ri].cells[ci]
+                    if cell.paragraphs and cell.paragraphs[0].runs:
+                        cell.paragraphs[0].runs[0].text = new_text
+                        for r in cell.paragraphs[0].runs[1:]: r.text = ''
+                    elif cell.paragraphs:
+                        cell.paragraphs[0].text = new_text
+    doc.save(docx_path)
+
+    pdf_path = letter.get('pdf_path') or docx_path.replace('.docx', '.pdf')
+    pr = generate_letter_pdf(docx_path, pdf_path)
+
+    docx_gid = save_file_to_gridfs(docx_path, os.path.basename(docx_path))
+    pdf_gid  = save_file_to_gridfs(pr, os.path.basename(pr)) if pr else letter.get('pdf_gridfs_id')
+
+    db.letters.update_one({'_id': ObjectId(lid)}, {'$set': {
+        'pdf_path': pr, 'docx_gridfs_id': docx_gid, 'pdf_gridfs_id': pdf_gid,
+        'updated_at': datetime.utcnow(),
+    }})
+    return jsonify({'message': 'Saved and PDF regenerated', 'has_pdf': pr is not None})
+
+
 @letters_bp.route('/<lid>', methods=['GET'])
 @jwt_required()
 def get_letter(lid):
@@ -585,21 +918,23 @@ def get_letter(lid):
     l  = db.letters.find_one({'_id': ObjectId(lid)})
     return (jsonify(_enrich(l, db)) if l else (jsonify({'error': 'Not found'}), 404))
 
+
 @letters_bp.route('/<lid>/submit', methods=['POST'])
 @jwt_required()
 def submit(lid):
     db  = current_app.db
     uid = get_jwt_identity()
-    l   = db.letters.find_one({'_id': ObjectId(lid)})
+    caller, err = _caller(db, uid)
+    if err: return err
+    l = db.letters.find_one({'_id': ObjectId(lid)})
     if not l: return jsonify({'error': 'Letter not found'}), 404
     if l['status'] != 'draft':
         return jsonify({'error': 'Only draft letters can be submitted'}), 400
     db.letters.update_one({'_id': ObjectId(lid)}, {
-        '$set':  {'status': 'pending_hr_head', 'updated_at': datetime.utcnow()},
+        '$set': {'status': 'pending_hr_head', 'updated_at': datetime.utcnow()},
         '$push': {'approval_history': {
-            'user_id': uid, 'action': 'submitted',
-            'from': 'draft', 'to': 'pending_hr_head',
-            'remarks': (request.json or {}).get('remarks', ''),
+            'user_id': uid, 'user_name': caller.get('name', ''),
+            'action': 'submit', 'remarks': 'Submitted for HR Head approval',
             'timestamp': datetime.utcnow().isoformat(),
         }},
     })
@@ -609,7 +944,6 @@ def submit(lid):
 @letters_bp.route('/<lid>/hr-action', methods=['POST'])
 @jwt_required()
 def hr_action(lid):
-    """HR Head approves or rejects. Optional inline edits regenerate the DOCX."""
     db  = current_app.db
     uid = get_jwt_identity()
     caller, err = _caller(db, uid)
@@ -617,7 +951,8 @@ def hr_action(lid):
     if caller.get('role') not in ('hr_head', 'admin'):
         return jsonify({'error': 'Only HR Head or Admin can take this action'}), 403
 
-    l = db.letters.find_one({'_id': ObjectId(lid)})
+    l = db.letters.find_one({'_id': ObjectId(lid)}
+    )
     if not l: return jsonify({'error': 'Letter not found'}), 404
     if l['status'] != 'pending_hr_head':
         return jsonify({'error': f"Cannot act on status '{l['status']}'"}), 400
@@ -643,21 +978,119 @@ def hr_action(lid):
         }},
     }
 
-    if edits and act == 'approve':
+    if act == 'approve':
+        hr_sig       = data.get('hr_signature', '')
+        chairman_sig = data.get('chairman_signature', '')
         new_ctx = {**l.get('context', {}), **edits, 'date': datetime.now().strftime('%d-%m-%Y')}
+        if hr_sig:       new_ctx['hr_signature']       = hr_sig
+        if chairman_sig: new_ctx['chairman_signature'] = chairman_sig
+
         tmpl = db.templates.find_one({'_id': ObjectId(l['template_id'])})
-        if tmpl:
+        if tmpl and tmpl.get('gridfs_id'):
             try:
-                generate_letter_docx(tmpl['file_path'], new_ctx, l['docx_path'])
+                tmp_dir   = tempfile.mkdtemp()
+                tmpl_path = _get_template_path(tmpl, tmp_dir)
+                generate_letter_docx(tmpl_path, new_ctx, l['docx_path'])
                 pr = generate_letter_pdf(l['docx_path'], l.get('pdf_path', l['docx_path'].replace('.docx', '.pdf')))
-                ops['$set']['context'] = new_ctx
-                ops['$set']['pdf_path'] = pr
+                docx_gid = save_file_to_gridfs(l['docx_path'], os.path.basename(l['docx_path']))
+                pdf_gid  = save_file_to_gridfs(pr, os.path.basename(pr)) if pr else l.get('pdf_gridfs_id')
+                ops['$set']['context']        = new_ctx
+                ops['$set']['pdf_path']       = pr
+                ops['$set']['docx_gridfs_id'] = docx_gid
+                ops['$set']['pdf_gridfs_id']  = pdf_gid
                 ops['$set']['edited_by_hr_head'] = True
             except Exception as e:
                 log.warning(f'Inline edit doc regen failed: {e}')
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if act == 'approve':
+        final_ctx = ops['$set'].get('context', l.get('context', {}))
+        emp_update = {}
+        if edits.get('joining_date') or final_ctx.get('joining_date'):
+            emp_update['joining_date'] = edits.get('joining_date') or final_ctx.get('joining_date')
+        if edits.get('designation') or final_ctx.get('designation'):
+            emp_update['designation'] = edits.get('designation') or final_ctx.get('designation')
+        if edits.get('department') or final_ctx.get('department'):
+            emp_update['department'] = edits.get('department') or final_ctx.get('department')
+        if emp_update:
+            emp_update['updated_at'] = datetime.utcnow()
+            try:
+                db.employees.update_one({'_id': ObjectId(l['employee_id'])}, {'$set': emp_update})
+            except Exception as e:
+                log.warning(f'Employee record sync failed: {e}')
 
     db.letters.update_one({'_id': ObjectId(lid)}, ops)
     return jsonify({'message': f'Letter {act}d', 'new_status': new_status})
+
+
+def _embed_signature_in_pdf(pdf_path: str, signature_b64: str) -> str:
+    try:
+        from pypdf import PdfWriter, PdfReader
+        from reportlab.pdfgen import canvas as rl_canvas
+        from PIL import Image
+
+        header, _, b64data = signature_b64.partition(',')
+        img_bytes = base64.b64decode(b64data if b64data else signature_b64)
+        img = Image.open(io.BytesIO(img_bytes)).convert('RGBA')
+
+        data = img.getdata()
+        new_data = []
+        for r, g, b, a in data:
+            if r > 230 and g > 230 and b > 230:
+                new_data.append((r, g, b, 0))
+            else:
+                new_data.append((r, g, b, a))
+        img.putdata(new_data)
+
+        png_buf = io.BytesIO()
+        img.save(png_buf, format='PNG')
+        png_buf.seek(0)
+
+        reader = PdfReader(pdf_path)
+        last_page = reader.pages[-1]
+        page_w = float(last_page.mediabox.width)
+        page_h = float(last_page.mediabox.height)
+
+        sig_w_pt = 4 * 28.35
+        aspect   = img.width / img.height if img.height else 1
+        sig_h_pt = sig_w_pt / aspect
+        if sig_h_pt > 2.5 * 28.35:
+            sig_h_pt = 2.5 * 28.35
+            sig_w_pt = sig_h_pt * aspect
+
+        sig_x = page_w - sig_w_pt - 2 * 28.35
+        sig_y = 2.5 * 28.35
+
+        overlay_buf = io.BytesIO()
+        c = rl_canvas.Canvas(overlay_buf, pagesize=(page_w, page_h))
+        tmp_png = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        tmp_png.write(png_buf.read())
+        tmp_png.flush()
+        c.drawImage(tmp_png.name, sig_x, sig_y, sig_w_pt, sig_h_pt, mask='auto')
+        c.save()
+        tmp_png.close()
+        os.unlink(tmp_png.name)
+        overlay_buf.seek(0)
+
+        overlay_reader = PdfReader(overlay_buf)
+        writer = PdfWriter()
+        for i, page in enumerate(reader.pages):
+            if i == len(reader.pages) - 1:
+                page.merge_page(overlay_reader.pages[0])
+            writer.add_page(page)
+
+        signed_path = pdf_path.replace('.pdf', '_signed.pdf')
+        with open(signed_path, 'wb') as out:
+            writer.write(out)
+        return signed_path
+
+    except ImportError as e:
+        log.warning(f'Signature embedding skipped missing library: {e}')
+        return pdf_path
+    except Exception as e:
+        log.warning(f'Signature embedding failed: {e}')
+        return pdf_path
 
 
 @letters_bp.route('/<lid>/send-email', methods=['POST'])
@@ -684,14 +1117,10 @@ def send_email(lid):
     emp_name  = ctx.get('candidate_name') or ctx.get('employee_name') or 'Candidate'
     company   = ctx.get('company_name', 'Infopace Management Pvt Ltd')
     desig     = ctx.get('designation', '')
-    joining   = ctx.get('joining_date', '')
-    ctc       = ctx.get('ctc_fmt') or ctx.get('ctc', '')
     sig_name  = ctx.get('hr_signatory_name', 'Aarpitha S')
     sig_desig = ctx.get('hr_signatory_designation', 'HR Associate')
     custom_msg = data.get('message', '').strip()
 
-
-    # ── Professional email body ──────────────────────────────────────────
     body = f"""Dear {emp_name},
 
             Please find attached your Offer Letter from {company} for the position of {desig}.
@@ -702,16 +1131,15 @@ def send_email(lid):
 
             To confirm your acceptance, please sign and return a copy of the Offer Letter via email or submit it in person on your date of joining.
 
-            If you have any questions or require further clarification, please feel free to reach out to us. We will be happy to assist you.
+            If you have any questions or require further clarification, please feel free to reach out to us.
 
             We look forward to having you as part of the {company} team.
 
-            Warm regards, 
+            Warm regards,
 
             {sig_name}
             {sig_desig}
             {company}
-
         """
 
     smtp_host = os.getenv('SMTP_HOST') or os.getenv('SMTP_SERVER', '')
@@ -722,91 +1150,97 @@ def send_email(lid):
     sent      = False
     err_msg   = ''
 
-    print("SMTP DEBUG:", smtp_host, smtp_user, smtp_pass, smtp_port, from_addr)
-
     if not smtp_host or not smtp_user:
-        return jsonify({
-            'error': 'SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in your .env file.'
-        }), 500
+        return jsonify({'error': 'SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in your .env file.'}), 500
 
     try:
         msg = MIMEMultipart()
-        msg['From']    = f'{company} HR <{from_addr}>'
+        msg['From']    = f'Infopace Management Pvt Ltd - HR Team <{from_addr}>'
         msg['To']      = to_email
-        msg['Subject'] = f'Offer Letter — {desig} at {company}'
-
+        msg['Subject'] = f'Offer Letter {desig} at {company}'
         msg.attach(MIMEText(body, 'plain'))
 
-        # Attach DOCX
-        if l.get('docx_path') and os.path.exists(l['docx_path']):
-            with open(l['docx_path'], 'rb') as f:
-                part = MIMEBase('application', 'octet-stream')
-                part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header(
-                'Content-Disposition',
-                f'attachment; filename="Offer_Letter_{emp_name.replace(" ", "_")}.docx"'
-            )
-            msg.attach(part)
+        hr_sig        = data.get('hr_signature', '')
+        chairman_sig  = data.get('chairman_signature', '')
+        pdf_to_attach = None
+        tmp_dir       = None
 
-        # Attach PDF if available
-        if l.get('pdf_path') and os.path.exists(l['pdf_path']):
-            with open(l['pdf_path'], 'rb') as f:
+        if hr_sig or chairman_sig:
+            tmpl = db.templates.find_one({'_id': ObjectId(l['template_id'])})
+            if tmpl and tmpl.get('gridfs_id'):
+                try:
+                    tmp_dir   = tempfile.mkdtemp()
+                    tmpl_path = _get_template_path(tmpl, tmp_dir)
+                    signed_ctx = dict(l.get('context', {}))
+                    if hr_sig:       signed_ctx['hr_signature']       = hr_sig
+                    if chairman_sig: signed_ctx['chairman_signature'] = chairman_sig
+                    signed_docx = os.path.join(tmp_dir, 'signed.docx')
+                    signed_pdf  = os.path.join(tmp_dir, 'signed.pdf')
+                    generate_letter_docx(tmpl_path, signed_ctx, signed_docx)
+                    result = generate_letter_pdf(signed_docx, signed_pdf)
+                    if result and os.path.exists(result):
+                        pdf_to_attach = result
+                except Exception as sig_err:
+                    log.warning(f'Signed PDF generation failed, falling back: {sig_err}')
+
+        # Fallback: use GridFS PDF
+        if not pdf_to_attach and l.get('pdf_gridfs_id'):
+            tmp_dir = tmp_dir or tempfile.mkdtemp()
+            pdf_tmp = os.path.join(tmp_dir, 'letter.pdf')
+            fs = gridfs.GridFS(db, collection='files_fs')
+            grid_out = fs.get(ObjectId(l['pdf_gridfs_id']))
+            with open(pdf_tmp, 'wb') as f:
+                f.write(grid_out.read())
+            pdf_to_attach = pdf_tmp
+        elif not pdf_to_attach and l.get('pdf_path') and os.path.exists(l['pdf_path']):
+            pdf_to_attach = l['pdf_path']
+
+        if pdf_to_attach and os.path.exists(pdf_to_attach):
+            with open(pdf_to_attach, 'rb') as f:
                 part = MIMEBase('application', 'pdf')
                 part.set_payload(f.read())
             encoders.encode_base64(part)
-            part.add_header(
-                'Content-Disposition',
-                f'attachment; filename="Offer_Letter_{emp_name.replace(" ", "_")}.pdf"'
-            )
+            part.add_header('Content-Disposition',
+                            f'attachment; filename="Offer_Letter_{emp_name.replace(" ", "_")}.pdf"')
             msg.attach(part)
 
         with smtplib.SMTP(smtp_host, smtp_port) as s:
-            s.ehlo()
-            s.starttls()
-            s.ehlo()
+            s.ehlo(); s.starttls(); s.ehlo()
             s.login(smtp_user, smtp_pass)
             s.sendmail(from_addr, to_email, msg.as_string())
-
         sent = True
 
     except smtplib.SMTPAuthenticationError:
         err_msg = 'Gmail authentication failed. Check your App Password in .env.'
-        print("SMTP AUTH ERROR:", err_msg)
     except smtplib.SMTPException as e:
         err_msg = f'SMTP error: {str(e)}'
-        print("SMTP ERROR:", err_msg)
     except Exception as e:
         err_msg = f'Email failed: {str(e)}'
-        print("EMAIL EXCEPTION:", err_msg)
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     if not sent:
         return jsonify({'error': err_msg}), 500
 
-    # Update letter status to issued
     db.letters.update_one({'_id': ObjectId(lid)}, {
         '$set': {
             'status': 'issued',
+            'signature_used': bool(data.get('hr_signature') or data.get('chairman_signature')),
             'candidate_email': to_email,
             'email_sent_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow(),
         },
         '$push': {'approval_history': {
-            'user_id': uid,
-            'user_name': caller.get('name', ''),
-            'action': 'issued',
-            'from': 'approved',
-            'to': 'issued',
+            'user_id': uid, 'user_name': caller.get('name', ''),
+            'action': 'issued', 'from': 'approved', 'to': 'issued',
             'remarks': f'Offer letter emailed to {to_email}',
             'timestamp': datetime.utcnow().isoformat(),
         }},
     })
 
-    return jsonify({
-        'message': f'Offer letter successfully emailed to {to_email}',
-        'email_sent': True,
-        'to_email': to_email,
-    })
+    return jsonify({'message': f'Offer letter successfully emailed to {to_email}',
+                    'email_sent': True, 'to_email': to_email})
 
 
 @letters_bp.route('/<lid>/confirm-join', methods=['POST'])
@@ -833,11 +1267,6 @@ def confirm_join(lid):
 @letters_bp.route('/<lid>/create-id', methods=['POST'])
 @jwt_required()
 def create_id(lid):
-    """
-    HR Head creates employee login account.
-    - role = 'employee', default password = 12345678
-    - employee_type set to 'joining' (shown in Joining Employees tab)
-    """
     db  = current_app.db
     uid = get_jwt_identity()
     caller, err = _caller(db, uid)
@@ -856,9 +1285,11 @@ def create_id(lid):
     if db.users.find_one({'employee_ref': str(emp['_id'])}):
         return jsonify({'error': 'Login ID already created for this employee'}), 400
 
-    data       = request.json or {}
+    data        = request.json or {}
     login_email = data.get('email') or l.get('candidate_email') or emp.get('email') or ''
-    emp_code   = emp.get('employee_id', str(emp['_id']))
+    emp_code    = emp.get('employee_id', str(emp['_id']))
+    manager_id  = data.get('manager_id', '')
+
     if not login_email:
         login_email = f"{emp_code.lower()}@company.com"
 
@@ -867,21 +1298,28 @@ def create_id(lid):
 
     user_res = db.users.insert_one({
         'name': emp.get('name', ''), 'email': login_email,
-        'password': hashed, 'role': 'employee',
+        'password': hashed, 'role': data.get('role', 'employee'),
         'employee_ref': str(emp['_id']), 'emp_code': emp_code,
         'created_at': datetime.utcnow(), 'created_by': uid,
     })
+
+    manager_name = ''
+    if manager_id:
+        mgr = db.users.find_one({'_id': ObjectId(manager_id)})
+        manager_name = mgr.get('name', '') if mgr else ''
 
     db.employees.update_one({'_id': emp['_id']}, {'$set': {
         'employee_type': 'joining', 'login_created': True,
         'login_user_id': str(user_res.inserted_id),
         'login_email': login_email, 'updated_at': datetime.utcnow(),
-        # Change 3: make employee visible in Employees section only after full lifecycle
         'visible': True,
+        'manager_id':   manager_id,
+        'manager_name': manager_name,
     }})
 
     db.letters.update_one({'_id': ObjectId(lid)}, {
-        '$set':  {'login_created': True, 'login_user_id': str(user_res.inserted_id), 'updated_at': datetime.utcnow()},
+        '$set':  {'status': 'id_created', 'login_created': True,
+                  'login_user_id': str(user_res.inserted_id), 'updated_at': datetime.utcnow()},
         '$push': {'approval_history': {
             'user_id': uid, 'user_name': caller.get('name', ''),
             'action': 'id_created', 'remarks': f'Login: {login_email}',
@@ -896,6 +1334,70 @@ def create_id(lid):
     }), 201
 
 
+@letters_bp.route('/<lid>/send-welcome-email', methods=['POST'])
+@jwt_required()
+def send_welcome_email(lid):
+    db  = current_app.db
+    uid = get_jwt_identity()
+    caller, err = _caller(db, uid)
+    if err: return err
+    if caller.get('role') not in ('hr_head', 'admin'):
+        return jsonify({'error': 'Only HR Head or Admin'}), 403
+
+    l = db.letters.find_one({'_id': ObjectId(lid)})
+    if not l: return jsonify({'error': 'Letter not found'}), 404
+
+    data         = request.json or {}
+    to_email     = data.get('email', '')
+    emp_name     = data.get('employee_name') or l.get('employee_name', 'Employee')
+    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3001')
+
+    if not to_email:
+        return jsonify({'error': 'Email is required'}), 400
+
+    smtp_host = os.getenv('SMTP_HOST') or ''
+    smtp_user = os.getenv('SMTP_USER') or ''
+    smtp_pass = os.getenv('SMTP_PASS') or ''
+    smtp_port = int(os.getenv('SMTP_PORT', 587))
+    from_addr = os.getenv('SMTP_FROM') or smtp_user
+
+    if not smtp_host or not smtp_user:
+        return jsonify({'error': 'SMTP not configured'}), 500
+
+    subject = f"Welcome to the Team, {emp_name}!"
+    body    = f"""Dear {emp_name},
+
+Thank you for joining us! We are excited to have you on board.
+
+Your Login Credentials:
+  Email:    {to_email}
+  Password: 12345678
+
+Please log in and complete your profile at: {frontend_url}/#/profile
+
+Document Instructions:
+  - Upload soft copies of all required documents through the portal.
+  - Bring hard copies on your joining date for submission to HR.
+
+Please change your password after first login.
+
+Regards,
+Infopace Management Pvt Ltd - HR Team
+"""
+    try:
+        from email.mime.text import MIMEText
+        msg = MIMEText(body, 'plain')
+        msg['Subject'] = subject
+        msg['From']    = f'Infopace Management Pvt Ltd - HR Team <{from_addr}>'
+        msg['To']      = to_email
+        with smtplib.SMTP(smtp_host, smtp_port) as s:
+            s.ehlo(); s.starttls(); s.login(smtp_user, smtp_pass)
+            s.sendmail(from_addr, to_email, msg.as_string())
+        return jsonify({'message': 'Welcome email sent successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @letters_bp.route('/<lid>/download', methods=['GET'])
 @jwt_required()
 def download(lid):
@@ -903,13 +1405,26 @@ def download(lid):
     fmt = request.args.get('format', 'docx')
     l   = db.letters.find_one({'_id': ObjectId(lid)})
     if not l: return jsonify({'error': 'Not found'}), 404
-    if fmt == 'pdf' and l.get('status') not in ('approved', 'issued', 'joined'):
+    if fmt == 'pdf' and l.get('status') not in ('approved', 'issued', 'joined', 'id_created'):
         return jsonify({'error': 'PDF only available for approved/issued letters'}), 403
+
+    # Serve from GridFS first
+    if fmt == 'pdf' and l.get('pdf_gridfs_id'):
+        return serve_from_gridfs(l['pdf_gridfs_id'],
+                                 download_name=os.path.basename(l.get('pdf_path', 'letter.pdf')),
+                                 mimetype='application/pdf')
+    if l.get('docx_gridfs_id'):
+        return serve_from_gridfs(l['docx_gridfs_id'],
+                                 download_name=os.path.basename(l.get('docx_path', 'letter.docx')),
+                                 mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+    # Fallback: disk
     if fmt == 'pdf' and l.get('pdf_path') and os.path.exists(l['pdf_path']):
         return send_file(l['pdf_path'], as_attachment=True, download_name=os.path.basename(l['pdf_path']))
     if l.get('docx_path') and os.path.exists(l['docx_path']):
         return send_file(l['docx_path'], as_attachment=True, download_name=os.path.basename(l['docx_path']))
-    return jsonify({'error': 'File not found on disk'}), 404
+
+    return jsonify({'error': 'File not found'}), 404
 
 
 @letters_bp.route('/<lid>', methods=['DELETE'])
@@ -925,10 +1440,17 @@ def delete_letter(lid):
     if not l: return jsonify({'error': 'Letter not found'}), 404
     if l.get('status') not in DELETABLE_STATUSES:
         return jsonify({'error': f"Cannot delete a '{l['status']}' letter. Only draft/rejected can be deleted."}), 400
+
+    # Delete from GridFS
+    delete_from_gridfs(l.get('docx_gridfs_id'))
+    delete_from_gridfs(l.get('pdf_gridfs_id'))
+
+    # Delete from disk if present
     for pk in ('docx_path', 'pdf_path'):
         fp = l.get(pk)
         if fp and os.path.exists(fp):
             try: os.remove(fp)
             except OSError: pass
+
     db.letters.delete_one({'_id': ObjectId(lid)})
     return jsonify({'message': f"Deleted by {caller.get('name', uid)} at {datetime.utcnow().isoformat()}"})

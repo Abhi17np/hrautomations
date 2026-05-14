@@ -1,4 +1,26 @@
+# ENV (Secrets)
+.env
+.env.*
+**/.env
 
+# Node
+**/node_modules/
+dist/
+build/
 
-#Ignore vscode AI rules
-.github\instructions\codacy.instructions.md
+# Python
+**/venv/
+**/__pycache__/
+**/*.pyc
+
+# Storage (local files)
+**/storage/
+
+# Logs
+**/*.log
+
+# OS / IDE
+**/.vscode/
+**/.idea/
+.DS_Store
+Thumbs.db

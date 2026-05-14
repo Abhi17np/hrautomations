@@ -3,11 +3,11 @@ import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 
 export default function LoginPage() {
-  const [email, setEmail]       = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError]       = useState('');
-  const [loading, setLoading]   = useState(false);
-  const [seeding, setSeeding]   = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [seeding, setSeeding] = useState(false);
   const { login } = useAuth();
 
   const handleSubmit = async (e) => {
@@ -27,15 +27,15 @@ export default function LoginPage() {
       await axios.post('/api/auth/seed');
       setEmail('admin@company.com');
       setPassword('admin123');
-    } catch {}
+    } catch { }
     setSeeding(false);
   };
 
   const DEMO = [
-    { label: 'Admin',    email: 'admin@company.com',   pass: 'admin123',    color: '#f5a623' },
-    { label: 'HR',       email: 'hr@company.com',       pass: 'hr123',       color: '#3fcf8e' },
-    { label: 'HR Head',  email: 'hrhead@company.com',   pass: 'hrhead123',   color: '#4f8ef7' },
-    { label: 'Manager',  email: 'manager@company.com',  pass: 'manager123',  color: '#c084fc' },
+    { label: 'Admin', email: 'admin@company.com', pass: 'admin123', color: '#f5a623' },
+    { label: 'HR', email: 'hr@company.com', pass: 'hr123', color: '#3fcf8e' },
+    { label: 'HR Head', email: 'hrhead@company.com', pass: 'hrhead123', color: '#4f8ef7' },
+    { label: 'Manager', email: 'manager@company.com', pass: 'manager123', color: '#c084fc' },
   ];
 
   return (
@@ -46,13 +46,17 @@ export default function LoginPage() {
     }}>
       <div style={{ width: '100%', maxWidth: 400 }}>
         <div style={{ textAlign: 'center', marginBottom: 40 }}>
-          <div style={{
-            width: 52, height: 52, borderRadius: 14, background: 'var(--accent-dim)',
-            border: '1px solid var(--accent)', display: 'inline-flex',
-            alignItems: 'center', justifyContent: 'center', fontSize: 24, marginBottom: 16
-          }}>◈</div>
+          <img
+            src="/infopaceee.jpg"
+            alt="Infopace Logo"
+            style={{
+              width: 120, height: 80, borderRadius: 12, marginBottom: 16,
+              objectFit: 'contain', background: '#fff', padding: 4,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.05)', border: '1px solid #e2e8f0'
+            }}
+          />
           <h1 style={{ fontFamily: 'var(--display)', fontSize: 26, fontWeight: 800 }}>
-            HR<span style={{ color: 'var(--accent)' }}>Letters</span>
+            HR <span style={{ color: 'var(--accent)' }}>Automation </span> System
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>Internal document automation</p>
         </div>

@@ -45,6 +45,15 @@ def login():
     check_hash = user['password'] if user else _DUMMY_HASH
     if not user or not bcrypt.checkpw(pwd_bytes, check_hash):
         return jsonify({'error': 'Invalid credentials'}), 401
+    # Block deactivated accounts (exited employees)
+    if user.get('is_active') == False:
+        return jsonify({'error': 'Account deactivated. Please contact HR.'}), 403
+    # Belt-and-suspenders: check employee record directly
+    if user.get('employee_ref'):
+        emp = db.employees.find_one({'_id': ObjectId(user['employee_ref'])})
+        if emp and emp.get('status') == 'exited':
+            db.users.update_one({'_id': user['_id']}, {'$set': {'is_active': False}})
+            return jsonify({'error': 'Account deactivated. Please contact HR.'}), 403
     token = create_access_token(identity=str(user['_id']))
     return jsonify({'token': token, 'user': serialize_user(user)})
 
@@ -57,18 +66,38 @@ def me():
     user    = db.users.find_one({'_id': ObjectId(user_id)})
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    return jsonify(serialize_user(user))
+    data = serialize_user(user)
+    # Merge employee record fields so frontend always has them
+    if user.get('employee_ref'):
+        try:
+            emp = db.employees.find_one({'_id': ObjectId(user['employee_ref'])})
+            if emp:
+                if emp.get('joining_date'): data['joining_date']  = emp['joining_date']
+                if emp.get('designation'):  data['designation']   = emp['designation']
+                if emp.get('department'):   data['department']    = emp['department']
+                if emp.get('employee_id'):  data['employee_code'] = emp['employee_id']
+        except Exception:
+            pass
+    # Also merge personal profile fields saved by the user
+    for field in ('phone', 'personal_email', 'gender', 'blood_group',
+                  'birthday', 'address', 'emergency_contact_name',
+                  'emergency_contact_phone', 'emergency_contact_relation'):
+        if user.get(field):
+            data[field] = user[field]
+    return jsonify(data)
 
 
 @auth_bp.route('/users', methods=['GET'])
 @jwt_required()
 def list_users():
-    # FIX #7: admin only
-    db  = current_app.db
-    uid = get_jwt_identity()
-    _, err = _require_admin(db, uid)
-    if err: return err
-    users = list(db.users.find({}, {'password': 0}))
+    db     = current_app.db
+    uid    = get_jwt_identity()
+    caller = db.users.find_one({'_id': ObjectId(uid)})
+    if not caller or caller.get('role') not in ('admin', 'hr_head'):
+        return jsonify({'error': 'Access denied'}), 403
+    role  = request.args.get('role')
+    query = {'role': role} if role else {}
+    users = list(db.users.find(query, {'password': 0}))
     for u in users:
         u['_id'] = str(u['_id'])
     return jsonify(users)
@@ -115,3 +144,66 @@ def seed():
     ]
     db.users.insert_many(users)
     return jsonify({'message': 'Seeded successfully'})
+
+@auth_bp.route('/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    db  = current_app.db
+    uid = get_jwt_identity()
+    user = db.users.find_one({'_id': ObjectId(uid)}, {'password': 0})
+    if not user:
+        return jsonify({'error': 'Not found'}), 404
+    user['_id'] = str(user['_id'])
+    # Also pull employee record if linked
+    if user.get('employee_ref'):
+        emp = db.employees.find_one({'_id': ObjectId(user['employee_ref'])})
+        if emp:
+            # Only set if value actually exists — skip empty strings
+            if emp.get('joining_date'): user['joining_date']  = emp['joining_date']
+            if emp.get('designation'):  user['designation']   = emp['designation']
+            if emp.get('department'):   user['department']    = emp['department']
+            if emp.get('employee_id'):  user['employee_code'] = emp['employee_id']
+    return jsonify(user)
+
+
+@auth_bp.route('/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    db   = current_app.db
+    uid  = get_jwt_identity()
+    data = request.json or {}
+
+    allowed = {
+        'name', 'phone', 'personal_email', 'address',
+        'birthday', 'anniversary', 'emergency_contact_name',
+        'emergency_contact_phone', 'emergency_contact_relation',
+        'blood_group', 'gender',
+    }
+    update = { k: v for k, v in data.items() if k in allowed }
+    update['updated_at'] = datetime.utcnow()
+
+    db.users.update_one({'_id': ObjectId(uid)}, {'$set': update})
+
+    # Also update name in employee record if linked
+    if 'name' in update and data.get('employee_ref'):
+        db.employees.update_one(
+            {'_id': ObjectId(data['employee_ref'])},
+            {'$set': {'name': update['name']}}
+        )
+
+    user = db.users.find_one({'_id': ObjectId(uid)}, {'password': 0})
+    if not user:
+        return jsonify({'error': 'User not found after update'}), 404
+    user['_id'] = str(user['_id'])
+    # Merge employee record so frontend user object stays complete
+    if user.get('employee_ref'):
+        try:
+            emp = db.employees.find_one({'_id': ObjectId(user['employee_ref'])})
+            if emp:
+                user['joining_date']  = emp.get('joining_date',  '')
+                user['designation']   = emp.get('designation',   '')
+                user['department']    = emp.get('department',    '')
+                user['employee_code'] = emp.get('employee_id',   '')
+        except Exception:
+            pass
+    return jsonify({'message': 'Profile updated', 'user': user})

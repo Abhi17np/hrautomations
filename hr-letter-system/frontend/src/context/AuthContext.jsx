@@ -4,7 +4,7 @@ import axios from 'axios';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user,    setUser]    = useState(null);
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // FIX #13: global 401 interceptor — redirect to login when JWT expires mid-session
@@ -16,7 +16,7 @@ export function AuthProvider({ children }) {
         if (err.response?.status === 401 || err.response?.status === 422) {
           // Don't redirect if this is the login endpoint itself
           const url = err.config?.url || '';
-          if (!url.includes('/api/auth/login') && !url.includes('/api/auth/me')) {
+          if (!url.includes('/api/auth/login') && !url.includes('/api/auth/profile')) {
             localStorage.removeItem('token');
             delete axios.defaults.headers.common['Authorization'];
             setUser(null);
@@ -33,7 +33,7 @@ export function AuthProvider({ children }) {
     const token = localStorage.getItem('token');
     if (token) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      axios.get('/api/auth/me')
+      axios.get('/api/auth/profile')
         .then(res => setUser(res.data))
         .catch(err => {
           // FIX #13 (AuthContext): only clear token on 401/422, not network errors
@@ -49,11 +49,13 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const res = await axios.post('/api/auth/login', { email, password });
-    const { token, user: u } = res.data;
+    const { token } = res.data;
     localStorage.setItem('token', token);
     axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    setUser(u);
-    return u;
+    // Fetch full profile so personal fields are available immediately
+    const profile = await axios.get('/api/auth/profile');
+    setUser(profile.data);
+    return profile.data;
   };
 
   const logout = () => {
@@ -62,8 +64,12 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
+  const updateUser = (fields) => {
+    setUser(prev => ({ ...prev, ...fields }));
+  };
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, loading, updateUser }}>
       {children}
     </AuthContext.Provider>
   );

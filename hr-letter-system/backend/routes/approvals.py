@@ -13,7 +13,7 @@ FLOW = {
     'pending_hr_head': {
         'approve': 'approved',
         'reject':  'rejected',
-        'roles':   ['hr_head', 'admin'],
+        'roles':   ['hr_head', 'admin', 'hr'],
         'label':   'HR Head Review',
     },
 }

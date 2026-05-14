@@ -7,7 +7,7 @@ Internal tool for generating, approving, and managing **offer letters** — buil
 ## Architecture
 
 ```
-React (port 3000)  ←→  Flask API (port 5000)  ←→  MongoDB (port 27017)
+React (port 3000)  ←→  Flask API (port 5050)  ←→  MongoDB (port 27017)
                               ↓
                      DOCX/PDF Generation (python-docx + LibreOffice)
 ```
@@ -25,7 +25,7 @@ React (port 3000)  ←→  Flask API (port 5000)  ←→  MongoDB (port 27017)
 cd backend
 cp .env.example .env          # edit JWT_SECRET_KEY
 pip install -r requirements.txt
-python app.py                 # → http://localhost:5000
+python app.py                 # → http://localhost:5050
 ```
 
 ### 2. Frontend
@@ -38,7 +38,7 @@ npm start                     # → http://localhost:3000
 ### 3. Seed demo users
 In the browser: click **Seed DB** on the login page, or:
 ```bash
-curl -X POST http://localhost:5000/api/auth/seed
+curl -X POST http://localhost:5050/api/auth/seed
 ```
 
 ---
@@ -49,6 +49,51 @@ curl -X POST http://localhost:5000/api/auth/seed
 docker-compose up --build
 # App: http://localhost:3000
 ```
+
+---
+
+## Production Deployment (Google Cloud Platform)
+
+### Option 1: Automated via GitHub Actions (Recommended - No Local Setup)
+
+1. **Create GCP Service Account:**
+   - Go to GCP Console > IAM & Admin > Service Accounts
+   - Create service account (e.g., `github-deployer`)
+   - Grant roles: `Cloud Run Admin`, `Cloud Build Service Account`, `Storage Admin`
+   - Create JSON key, download it
+
+2. **Push to GitHub:**
+   - Create a GitHub repository
+   - Push your code: `git add . && git commit -m "Initial commit" && git push origin main`
+
+3. **Set GitHub Secrets:**
+   In your GitHub repo > Settings > Secrets and variables > Actions:
+   ```
+   GCP_PROJECT_ID: your-gcp-project-id
+   GCP_SA_KEY: (paste entire JSON key content)
+   MONGO_URI: mongodb+srv://...
+   JWT_SECRET_KEY: your-long-secret-key
+   SMTP_HOST: smtp.gmail.com
+   SMTP_PORT: 587
+   SMTP_USER: your-email@gmail.com
+   SMTP_PASS: your-app-password
+   SMTP_FROM: your-email@gmail.com
+   COMPANY_NAME: Your Company Name
+   ```
+
+4. **Deploy:**
+   - Push to `main` branch or manually trigger in Actions tab
+   - Wait for deployment (5-10 minutes)
+   - Get URLs from Cloud Run console or workflow logs
+
+### Option 2: Manual via GCP Console
+
+1. Enable Cloud Run and Cloud Build APIs
+2. Go to Cloud Run > Create Service
+3. Choose "Deploy from source"
+4. Connect your GitHub repo
+5. Select branch, set build settings
+6. Configure environment variables as above
 
 ---
 

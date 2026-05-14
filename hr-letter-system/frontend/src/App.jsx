@@ -9,6 +9,10 @@ import LettersPage   from './pages/LettersPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import ExitPage      from './pages/ExitPage';
 import Layout        from './components/Layout';
+import AppointmentPage from './pages/AppointmentPage';
+import DocumentsPage   from './pages/DocumentsPage';
+
+
 import './App.css';
 
 // Hash-based router
@@ -25,12 +29,14 @@ function useHashRoute() {
 }
 
 const PAGES = {
-  '/':          DashboardPage,
-  '/employees': EmployeesPage,
-  '/templates': TemplatesPage,
-  '/letters':   LettersPage,
-  '/approvals': ApprovalsPage,
-  '/exit':      ExitPage,
+  '/':             DashboardPage,
+  '/employees':    EmployeesPage,
+  '/templates':    TemplatesPage,
+  '/letters':      LettersPage,
+  '/approvals':    ApprovalsPage,
+  '/exit':         ExitPage,
+  '/appointment':  AppointmentPage,
+  '/documents':    DocumentsPage,
 };
 
 // FIX #5 (App.jsx L41): proper 404 page for unknown routes
