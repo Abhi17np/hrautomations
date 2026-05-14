@@ -455,17 +455,22 @@ function EmployeeDashboard({ user }) {
 
   if (loading) return <div className="page-loading"><div className="spinner" /></div>;
 
-  const { letters, aoOrders, exitStatus } = data;
-  const offerLetters = letters.filter(l => l.letter_type === 'offer');
+  const { letters = [], aoOrders = [], exitStatus } = data;
+  
+  // Defensive checks in case the API returns HTML (which is a string) instead of JSON
+  const safeLetters = Array.isArray(letters) ? letters : [];
+  const safeAoOrders = Array.isArray(aoOrders) ? aoOrders : [];
+
+  const offerLetters = safeLetters.filter(l => l.letter_type === 'offer');
   const latestLetter = offerLetters[0];
-  const latestAO = aoOrders[0];
+  const latestAO = safeAoOrders[0];
   const inExit = exitStatus?.in_exit_pipeline;
   const exitSt = exitStatus?.status;
   const isExited = exitSt === 'exited';
   const isPending = exitSt === 'resignation_pending';
-  const approvedAOs = aoOrders.filter(o => o.status === 'approved').length;
-  const pendingAOs = aoOrders.filter(o => o.status === 'pending_hr_head').length;
-  const rejectedAOs = aoOrders.filter(o => o.status === 'rejected').length;
+  const approvedAOs = safeAoOrders.filter(o => o.status === 'approved').length;
+  const pendingAOs = safeAoOrders.filter(o => o.status === 'pending_hr_head').length;
+  const rejectedAOs = safeAoOrders.filter(o => o.status === 'rejected').length;
 
   // Greeting based on time
   const hour = new Date().getHours();
