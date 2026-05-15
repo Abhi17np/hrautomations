@@ -6,7 +6,9 @@ from datetime import timedelta
 import os
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/api/*": {"origins": "*"}}, 
+     allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
 app.config['JWT_SECRET_KEY']            = os.getenv('JWT_SECRET_KEY', 'dev-secret-change-in-prod')
 app.config['JWT_ACCESS_TOKEN_EXPIRES']  = timedelta(hours=8)

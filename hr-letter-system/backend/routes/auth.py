@@ -145,6 +145,34 @@ def seed():
     db.users.insert_many(users)
     return jsonify({'message': 'Seeded successfully'})
 
+@auth_bp.route('/change-password', methods=['PUT'])
+@jwt_required()
+def change_password():
+    db   = current_app.db
+    uid  = get_jwt_identity()
+    data = request.json or {}
+
+    current_password = data.get('current_password', '')
+    new_password     = data.get('new_password', '')
+
+    if not current_password or not new_password:
+        return jsonify({'error': 'current_password and new_password are required'}), 400
+    if len(new_password) < 6:
+        return jsonify({'error': 'New password must be at least 6 characters'}), 400
+
+    user = db.users.find_one({'_id': ObjectId(uid)})
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    if not bcrypt.checkpw(current_password.encode(), user['password']):
+        return jsonify({'error': 'Current password is incorrect'}), 400
+
+    new_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
+    db.users.update_one({'_id': ObjectId(uid)}, {'$set': {'password': new_hash, 'updated_at': datetime.utcnow()}})
+
+    return jsonify({'message': 'Password changed successfully'})
+
+
 @auth_bp.route('/profile', methods=['GET'])
 @jwt_required()
 def get_profile():

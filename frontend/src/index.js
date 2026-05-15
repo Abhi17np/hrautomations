@@ -3,8 +3,11 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import axios from 'axios';
 
-// Point all API calls to the Google Cloud Run backend
-axios.defaults.baseURL = 'https://hr-325528727950.us-central1.run.app';
+// Set API base URL: Use local backend if running on localhost, otherwise use Cloud Run
+const isLocal = window.location.hostname === 'localhost';
+axios.defaults.baseURL = isLocal 
+  ? 'http://localhost:5050' 
+  : 'https://hr-325528727950.us-central1.run.app';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 

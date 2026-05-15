@@ -44,7 +44,7 @@ const ROLE_BG = {
   employee: 'rgba(8,145,178,.10)',
 };
 
-const TABS = ['Personal', 'Corporate', 'Emergency'];
+const TABS = ['Personal', 'Corporate', 'Emergency', 'Password'];
 
 // ─── NavLink — logic identical, styles updated ────────────────────────────
 function NavLink({ to, icon, label, currentPath, badge }) {
@@ -116,6 +116,10 @@ function ProfileModal({ onClose }) {
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
+  const [pwForm, setPwForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwError, setPwError] = useState('');
+  const [pwSuccess, setPwSuccess] = useState('');
   const REQUIRED_FIELDS = ['name', 'phone', 'personal_email', 'gender', 'blood_group', 'birthday', 'address'];
 
   const isProfileComplete = (u) => u && REQUIRED_FIELDS.every(k => u[k] && String(u[k]).trim() !== '');
@@ -166,6 +170,31 @@ function ProfileModal({ onClose }) {
 
   const rc = ROLE_COLOR[user?.role] || '#2563eb';
   const rbg = ROLE_BG[user?.role] || 'rgba(37,99,235,.10)';
+
+  const changePassword = async () => {
+    setPwError(''); setPwSuccess('');
+    if (!pwForm.current_password || !pwForm.new_password || !pwForm.confirm_password) {
+      setPwError('Please fill all password fields.'); return;
+    }
+    if (pwForm.new_password.length < 6) {
+      setPwError('New password must be at least 6 characters.'); return;
+    }
+    if (pwForm.new_password !== pwForm.confirm_password) {
+      setPwError('New passwords do not match.'); return;
+    }
+    setPwSaving(true);
+    try {
+      await axios.put('/api/auth/change-password', {
+        current_password: pwForm.current_password,
+        new_password: pwForm.new_password,
+      });
+      setPwSuccess('Password changed successfully!');
+      setPwForm({ current_password: '', new_password: '', confirm_password: '' });
+      setTimeout(() => setPwSuccess(''), 3000);
+    } catch (e) {
+      setPwError(e.response?.data?.error || 'Failed to change password');
+    } finally { setPwSaving(false); }
+  };
 
   return (
     <div className="modal-overlay" onClick={e => {
@@ -361,6 +390,33 @@ function ProfileModal({ onClose }) {
               </div>
             </div>
           )}
+
+          {/* Password */}
+          {tab === 3 && (
+            <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {pwError && <div className="alert alert-error">{pwError}</div>}
+              {pwSuccess && <div className="alert alert-success">{pwSuccess}</div>}
+              <div style={{ padding: '12px 16px', background: '#f0f4ff', borderRadius: 8, fontSize: 12.5, color: '#374151', lineHeight: 1.6 }}>
+                🔒 Choose a strong password with at least 6 characters. You'll need to log in again after changing it.
+              </div>
+              {[
+                { label: 'Current Password', key: 'current_password', placeholder: 'Enter your current password' },
+                { label: 'New Password', key: 'new_password', placeholder: 'Enter new password (min 6 chars)' },
+                { label: 'Confirm Password', key: 'confirm_password', placeholder: 'Re-enter new password' },
+              ].map(({ label, key, placeholder }) => (
+                <div key={key} className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">{label} *</label>
+                  <input
+                    type="password"
+                    value={pwForm[key]}
+                    onChange={e => setPwForm(p => ({ ...p, [key]: e.target.value }))}
+                    placeholder={placeholder}
+                    autoComplete="new-password"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -372,7 +428,11 @@ function ProfileModal({ onClose }) {
           {(!['employee', 'manager'].includes(user?.role) || missingFields.length === 0) && (
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           )}
-          {tab !== 1 && (
+          {tab === 3 ? (
+            <button className="btn btn-primary" onClick={changePassword} disabled={pwSaving}>
+              {pwSaving ? 'Changing…' : 'Change Password'}
+            </button>
+          ) : tab !== 1 && (
             <button className="btn btn-primary" onClick={save} disabled={saving}>
               {saving ? 'Saving…' : 'Save Changes'}
             </button>
