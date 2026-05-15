@@ -44,7 +44,7 @@ const ROLE_BG = {
   employee: 'rgba(8,145,178,.10)',
 };
 
-const TABS = ['Personal', 'Corporate', 'Emergency', 'Password'];
+const TABS = ['Personal', 'Corporate', 'Emergency', 'Password', 'Accounts'];
 
 // ─── NavLink — logic identical, styles updated ────────────────────────────
 function NavLink({ to, icon, label, currentPath, badge }) {
@@ -120,6 +120,12 @@ function ProfileModal({ onClose }) {
   const [pwSaving, setPwSaving] = useState(false);
   const [pwError, setPwError] = useState('');
   const [pwSuccess, setPwSuccess] = useState('');
+  const [accounts, setAccounts] = useState([]);
+  const [acctLoading, setAcctLoading] = useState(false);
+  const [acctForm, setAcctForm] = useState({ name: '', email: '', password: '', role: 'hr' });
+  const [acctSaving, setAcctSaving] = useState(false);
+  const [acctError, setAcctError] = useState('');
+  const [acctSuccess, setAcctSuccess] = useState('');
   const REQUIRED_FIELDS = ['name', 'phone', 'personal_email', 'gender', 'blood_group', 'birthday', 'address'];
 
   const isProfileComplete = (u) => u && REQUIRED_FIELDS.every(k => u[k] && String(u[k]).trim() !== '');
@@ -167,6 +173,47 @@ function ProfileModal({ onClose }) {
       setError(e.response?.data?.error || 'Save failed');
     } finally { setSaving(false); }
   };
+
+  const loadAccounts = async () => {
+    setAcctLoading(true);
+    try {
+      const r = await axios.get('/api/auth/users');
+      setAccounts((r.data || []).filter(u => ['hr', 'hr_head'].includes(u.role)));
+    } catch { }
+    finally { setAcctLoading(false); }
+  };
+
+  const createAccount = async () => {
+    setAcctError(''); setAcctSuccess('');
+    if (!acctForm.name || !acctForm.email || !acctForm.password) {
+      setAcctError('All fields are required.'); return;
+    }
+    if (acctForm.password.length < 6) {
+      setAcctError('Password must be at least 6 characters.'); return;
+    }
+    setAcctSaving(true);
+    try {
+      await axios.post('/api/auth/users', acctForm);
+      setAcctSuccess(`Account created for ${acctForm.email}`);
+      setAcctForm({ name: '', email: '', password: '', role: 'hr' });
+      loadAccounts();
+      setTimeout(() => setAcctSuccess(''), 3000);
+    } catch (e) {
+      setAcctError(e.response?.data?.error || 'Failed to create account');
+    } finally { setAcctSaving(false); }
+  };
+
+  const deleteAccount = async (id, name) => {
+    if (!window.confirm(`Delete account for ${name}? This cannot be undone.`)) return;
+    try {
+      await axios.delete(`/api/auth/users/${id}`);
+      setAccounts(a => a.filter(u => u._id !== id));
+    } catch (e) {
+      setAcctError(e.response?.data?.error || 'Failed to delete account');
+    }
+  };
+
+  useEffect(() => { if (tab === 4 && user?.role === 'admin') loadAccounts(); }, [tab]);
 
   const rc = ROLE_COLOR[user?.role] || '#2563eb';
   const rbg = ROLE_BG[user?.role] || 'rgba(37,99,235,.10)';
@@ -267,21 +314,24 @@ function ProfileModal({ onClose }) {
 
           {/* Tab strip */}
           <div style={{ display: 'flex' }}>
-            {TABS.map((t, i) => (
-              <button
-                key={t}
-                onClick={() => setTab(i)}
-                style={{
-                  padding: '8px 18px', fontSize: 12.5, fontWeight: 600,
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  borderBottom: `2px solid ${tab === i ? '#2563eb' : 'transparent'}`,
-                  color: tab === i ? '#2563eb' : '#64748b',
-                  transition: 'all .13s', letterSpacing: '-0.1px',
-                }}
-              >
-                {t}
-              </button>
-            ))}
+            {TABS.filter(t => t !== 'Accounts' || user?.role === 'admin').map((t, i) => {
+              const realIdx = TABS.indexOf(t);
+              return (
+                <button
+                  key={t}
+                  onClick={() => setTab(realIdx)}
+                  style={{
+                    padding: '8px 18px', fontSize: 12.5, fontWeight: 600,
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    borderBottom: `2px solid ${tab === realIdx ? '#2563eb' : 'transparent'}`,
+                    color: tab === realIdx ? '#2563eb' : '#64748b',
+                    transition: 'all .13s', letterSpacing: '-0.1px',
+                  }}
+                >
+                  {t}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -417,6 +467,115 @@ function ProfileModal({ onClose }) {
               ))}
             </div>
           )}
+
+          {/* Accounts — admin only */}
+          {tab === 4 && user?.role === 'admin' && (
+            <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+              {/* Existing accounts list */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 }}>
+                  HR Accounts
+                </div>
+                {acctLoading ? (
+                  <div style={{ textAlign: 'center', padding: '20px', color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+                ) : accounts.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '20px', color: '#9ca3af', fontSize: 13 }}>No HR accounts found</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {accounts.map(acc => (
+                      <div key={acc._id} style={{
+                        display: 'flex', alignItems: 'center', gap: 12,
+                        padding: '10px 14px', background: '#f8fafc',
+                        border: '1px solid #e2e8f0', borderRadius: 9,
+                      }}>
+                        <div style={{
+                          width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+                          background: acc.role === 'hr_head' ? 'linear-gradient(135deg,#4f8ef7,#6366f1)' : 'linear-gradient(135deg,#10b981,#059669)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          color: '#fff', fontSize: 12, fontWeight: 700,
+                        }}>
+                          {acc.name?.[0]?.toUpperCase()}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 13, color: '#0f172a' }}>{acc.name}</div>
+                          <div style={{ fontSize: 11.5, color: '#64748b', fontFamily: 'monospace' }}>{acc.email}</div>
+                        </div>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8,
+                          padding: '2px 8px', borderRadius: 99,
+                          background: acc.role === 'hr_head' ? '#eef4ff' : '#ecfdf5',
+                          color: acc.role === 'hr_head' ? '#3538cd' : '#0a7c4f',
+                          border: `1px solid ${acc.role === 'hr_head' ? '#c7d7fe' : '#a7f3d0'}`,
+                        }}>
+                          {acc.role === 'hr_head' ? 'HR Head' : 'HR'}
+                        </span>
+                        <button onClick={() => deleteAccount(acc._id, acc.name)} style={{
+                          width: 28, height: 28, border: '1px solid #fecdd3', borderRadius: 7,
+                          background: '#fff1f3', color: '#c01048', cursor: 'pointer',
+                          fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          flexShrink: 0, transition: 'all .13s',
+                        }}
+                          onMouseEnter={e => { e.currentTarget.style.background = '#c01048'; e.currentTarget.style.color = '#fff'; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = '#fff1f3'; e.currentTarget.style.color = '#c01048'; }}
+                          title="Delete account"
+                        >✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Divider */}
+              <div style={{ height: 1, background: '#e2e8f0' }} />
+
+              {/* Create account form */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>
+                  Create New Account
+                </div>
+                {acctError && <div className="alert alert-error" style={{ marginBottom: 12 }}>{acctError}</div>}
+                {acctSuccess && <div className="alert alert-success" style={{ marginBottom: 12 }}>{acctSuccess}</div>}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  {[
+                    { label: 'Full Name', key: 'name', type: 'text', placeholder: 'e.g. Priya Sharma' },
+                    { label: 'Email', key: 'email', type: 'email', placeholder: 'e.g. priya@infopace.com' },
+                    { label: 'Password', key: 'password', type: 'password', placeholder: 'Min 6 characters' },
+                  ].map(({ label, key, type, placeholder }) => (
+                    <div key={key} className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">{label} *</label>
+                      <input
+                        type={type}
+                        value={acctForm[key]}
+                        onChange={e => setAcctForm(p => ({ ...p, [key]: e.target.value }))}
+                        placeholder={placeholder}
+                      />
+                    </div>
+                  ))}
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Role *</label>
+                    <select value={acctForm.role} onChange={e => setAcctForm(p => ({ ...p, role: e.target.value }))}>
+                      <option value="hr">HR (Recruiter)</option>
+                      <option value="hr_head">HR Head (Manager)</option>
+                    </select>
+                  </div>
+                </div>
+                <button
+                  onClick={createAccount}
+                  disabled={acctSaving}
+                  style={{
+                    marginTop: 14, padding: '9px 20px',
+                    background: 'linear-gradient(135deg,#444ce7,#6172f3)',
+                    border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                    color: '#fff', cursor: 'pointer', width: '100%',
+                    opacity: acctSaving ? 0.6 : 1,
+                  }}
+                >
+                  {acctSaving ? 'Creating…' : '+ Create Account'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -432,7 +591,7 @@ function ProfileModal({ onClose }) {
             <button className="btn btn-primary" onClick={changePassword} disabled={pwSaving}>
               {pwSaving ? 'Changing…' : 'Change Password'}
             </button>
-          ) : tab !== 1 && (
+          ) : tab === 4 ? null : tab !== 1 && (
             <button className="btn btn-primary" onClick={save} disabled={saving}>
               {saving ? 'Saving…' : 'Save Changes'}
             </button>

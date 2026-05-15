@@ -145,6 +145,20 @@ def seed():
     db.users.insert_many(users)
     return jsonify({'message': 'Seeded successfully'})
 
+@auth_bp.route('/users/<user_id>', methods=['DELETE'])
+@jwt_required()
+def delete_user(user_id):
+    db  = current_app.db
+    uid = get_jwt_identity()
+    _, err = _require_admin(db, uid)
+    if err: return err
+    if str(uid) == user_id:
+        return jsonify({'error': 'Cannot delete your own account'}), 400
+    result = db.users.delete_one({'_id': ObjectId(user_id)})
+    if result.deleted_count == 0:
+        return jsonify({'error': 'User not found'}), 404
+    return jsonify({'message': 'User deleted'})
+
 @auth_bp.route('/change-password', methods=['PUT'])
 @jwt_required()
 def change_password():
