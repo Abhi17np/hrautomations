@@ -442,7 +442,7 @@ export default function Layout({ children, currentPath }) {
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
           <img
-            src="/infopaceee.jpg"
+            src="/infopace-logo.webp"
             alt="Logo"
             style={{
               width: 60, height: 60, borderRadius: 6, flexShrink: 0,

@@ -308,12 +308,12 @@ function HRDashboard({ user }) {
       axios.get('/api/approvals/pending'),
     ]).then(([emps, stats, ao, exit, resign, pending]) => {
       setData({
-        employees: emps.value?.data || [],
-        letterStats: stats.value?.data || {},
-        aoOrders: ao.value?.data || [],
-        exitEmployees: exit.value?.data || [],
-        pendingResign: resign.value?.data || [],
-        pendingLetters: pending.value?.data || [],
+        employees: Array.isArray(emps.value?.data) ? emps.value.data : [],
+        letterStats: (stats.value?.data && typeof stats.value.data === 'object') ? stats.value.data : {},
+        aoOrders: Array.isArray(ao.value?.data) ? ao.value.data : [],
+        exitEmployees: Array.isArray(exit.value?.data) ? exit.value.data : [],
+        pendingResign: Array.isArray(resign.value?.data) ? resign.value.data : [],
+        pendingLetters: Array.isArray(pending.value?.data) ? pending.value.data : [],
       });
     }).finally(() => setLoading(false));
   }, []);
@@ -506,9 +506,9 @@ function ManagerDashboard({ user }) {
       axios.get('/api/appointment-orders/'),
     ]).then(([resign, exit, ao]) => {
       setData({
-        pendingResign: resign.value?.data || [],
-        exitPipeline: exit.value?.data || [],
-        aoOrders: ao.value?.data || [],
+        pendingResign: Array.isArray(resign.value?.data) ? resign.value.data : [],
+        exitPipeline: Array.isArray(exit.value?.data) ? exit.value.data : [],
+        aoOrders: Array.isArray(ao.value?.data) ? ao.value.data : [],
       });
     }).finally(() => setLoading(false));
   }, []);
@@ -632,9 +632,9 @@ function EmployeeDashboard({ user }) {
       axios.get('/api/exit/my-status'),
     ]).then(([letters, ao, exit]) => {
       setData({
-        letters: letters.value?.data || [],
-        aoOrders: ao.value?.data || [],
-        exitStatus: exit.value?.data || null,
+        letters: Array.isArray(letters.value?.data) ? letters.value.data : [],
+        aoOrders: Array.isArray(ao.value?.data) ? ao.value.data : [],
+        exitStatus: (exit.value?.data && typeof exit.value.data === 'object') ? exit.value.data : null,
       });
     }).finally(() => setLoading(false));
   }, []);

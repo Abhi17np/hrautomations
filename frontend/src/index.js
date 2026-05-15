@@ -1,6 +1,10 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import axios from 'axios';
+
+// Point all API calls to the Google Cloud Run backend
+axios.defaults.baseURL = 'https://hr-325528727950.us-central1.run.app';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 

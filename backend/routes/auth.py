@@ -137,10 +137,10 @@ def seed():
     if db.users.find_one({'email': 'admin@company.com'}):
         return jsonify({'message': 'Already seeded'})
     users = [
-        {'name': 'Admin User',   'email': 'admin@company.com',   'password': bcrypt.hashpw(b'admin123',   bcrypt.gensalt()), 'role': 'admin',   'created_at': datetime.utcnow()},
-        {'name': 'HR Executive', 'email': 'hr@company.com',       'password': bcrypt.hashpw(b'hr123',      bcrypt.gensalt()), 'role': 'hr',      'created_at': datetime.utcnow()},
-        {'name': 'HR Manager',   'email': 'hrhead@company.com',   'password': bcrypt.hashpw(b'hrhead123',  bcrypt.gensalt()), 'role': 'hr_head', 'created_at': datetime.utcnow()},
-        {'name': 'Dept Manager', 'email': 'manager@company.com',  'password': bcrypt.hashpw(b'manager123', bcrypt.gensalt()), 'role': 'manager', 'created_at': datetime.utcnow()},
+        {'name': 'Admin User',   'email': 'admin@company.com',               'password': bcrypt.hashpw(b'admin123',  bcrypt.gensalt()), 'role': 'admin',   'created_at': datetime.utcnow()},
+        {'name': 'HR Executive', 'email': 'recruitement@infopaceindia.com',   'password': bcrypt.hashpw(b'12345678',  bcrypt.gensalt()), 'role': 'hr',      'created_at': datetime.utcnow()},
+        {'name': 'HR Manager',   'email': 'hr@infopaceindia.com',             'password': bcrypt.hashpw(b'12345678',  bcrypt.gensalt()), 'role': 'hr_manager', 'created_at': datetime.utcnow()},
+        {'name': 'Dept Manager', 'email': 'manager@company.com',              'password': bcrypt.hashpw(b'manager123',bcrypt.gensalt()), 'role': 'manager', 'created_at': datetime.utcnow()},
     ]
     db.users.insert_many(users)
     return jsonify({'message': 'Seeded successfully'})

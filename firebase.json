@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "public": "hr-letter-system/frontend/build",
+    "public": "frontend/build",
     "ignore": [
       "firebase.json",
       "**/.*",

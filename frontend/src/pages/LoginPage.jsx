@@ -1,13 +1,11 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [seeding, setSeeding] = useState(false);
   const { login } = useAuth();
 
   const handleSubmit = async (e) => {
@@ -20,23 +18,6 @@ export default function LoginPage() {
       setError(err.response?.data?.error || 'Login failed');
     } finally { setLoading(false); }
   };
-
-  const handleSeed = async () => {
-    setSeeding(true);
-    try {
-      await axios.post('/api/auth/seed');
-      setEmail('admin@company.com');
-      setPassword('admin123');
-    } catch { }
-    setSeeding(false);
-  };
-
-  const DEMO = [
-    { label: 'Admin', email: 'admin@company.com', pass: 'admin123', color: '#f5a623' },
-    { label: 'HR', email: 'hr@company.com', pass: 'hr123', color: '#3fcf8e' },
-    { label: 'HR Head', email: 'hrhead@company.com', pass: 'hrhead123', color: '#4f8ef7' },
-    { label: 'Manager', email: 'manager@company.com', pass: 'manager123', color: '#c084fc' },
-  ];
 
   return (
     <div style={{
@@ -77,32 +58,6 @@ export default function LoginPage() {
               {loading ? 'Signing in...' : 'Sign in'}
             </button>
           </form>
-        </div>
-
-        <div style={{ marginTop: 16, padding: 16, background: 'var(--surface)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Demo accounts</span>
-            <button className="btn btn-sm btn-secondary" onClick={handleSeed} disabled={seeding} style={{ fontSize: 11 }}>
-              {seeding ? 'Seeding...' : 'Seed DB'}
-            </button>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            {DEMO.map(acc => (
-              <button
-                key={acc.email}
-                onClick={() => { setEmail(acc.email); setPassword(acc.pass); }}
-                style={{
-                  padding: '7px 10px', background: 'var(--surface-2)', border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius)', cursor: 'pointer', textAlign: 'left', transition: 'border-color 0.15s'
-                }}
-                onMouseEnter={e => e.currentTarget.style.borderColor = acc.color + '66'}
-                onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}
-              >
-                <div style={{ fontSize: 11, fontWeight: 600, color: acc.color }}>{acc.label}</div>
-                <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)' }}>{acc.pass}</div>
-              </button>
-            ))}
-          </div>
         </div>
       </div>
     </div>
